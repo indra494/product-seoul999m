@@ -1,0 +1,4 @@
+import assert from "node:assert/strict";import test from "node:test";
+async function render(){const u=new URL("../dist/server/index.js",import.meta.url);u.searchParams.set("test",`${process.pid}-${Date.now()}`);const{default:w}=await import(u.href);return w.fetch(new Request("http://localhost/",{headers:{accept:"text/html"}}),{ASSETS:{fetch:async()=>new Response("Not found",{status:404})}},{waitUntil(){},passThroughOnException(){}})}
+test("renders the pixel squad selection",async()=>{const r=await render();assert.equal(r.status,200);const h=await r.text();assert.match(h,/안개 분대/);assert.match(h,/거점전/);assert.match(h,/로한/);assert.match(h,/미나/);assert.match(h,/분대 확정/)});
+test("removes the starter preview",async()=>{const r=await render();const h=await r.text();assert.doesNotMatch(h,/codex-preview|Building your site|react-loading-skeleton/);assert.match(h,/TACTICAL PIXEL ACTION/)});
