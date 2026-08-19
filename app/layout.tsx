@@ -14,8 +14,8 @@ const geistMono = Geist_Mono({
 });
 
 export async function generateMetadata():Promise<Metadata>{
-  const h=await headers(),host=h.get("x-forwarded-host")??h.get("host")??"localhost:3000",protocol=h.get("x-forwarded-proto")??(host.startsWith("localhost")?"http":"https"),image=`${protocol}://${host}/og.png`;
-  return {title:"안개 분대: 거점전",description:"두 캐릭터를 전환하며 전장의 안개 속에서 적 거점을 파괴하는 도트 액션 전략 게임",icons:{icon:"/favicon.svg",shortcut:"/favicon.svg"},openGraph:{title:"안개 분대: 거점전",description:"2인 분대 도트 액션 전략 게임",images:[image]},twitter:{card:"summary_large_image",title:"안개 분대: 거점전",description:"2인 분대 도트 액션 전략 게임",images:[image]}};
+  await headers();
+  return {title:"언더드릴: 거점전",description:"흙을 파고 다시 매립하며 숨은 장비와 지뢰로 싸우는 2인 분대 도트 전략 게임",icons:{icon:"/favicon.svg",shortcut:"/favicon.svg"},openGraph:{title:"언더드릴: 거점전",description:"땅굴을 직접 만드는 2인 분대 도트 전략 게임"},twitter:{card:"summary",title:"언더드릴: 거점전",description:"땅굴을 직접 만드는 2인 분대 도트 전략 게임"}};
 }
 
 export default function RootLayout({
