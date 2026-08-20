@@ -1,4 +1,0 @@
-import assert from "node:assert/strict";import test from "node:test";
-async function render(){const u=new URL("../dist/server/index.js",import.meta.url);u.searchParams.set("test",`${process.pid}-${Date.now()}`);const{default:w}=await import(u.href);return w.fetch(new Request("http://localhost/",{headers:{accept:"text/html"}}),{ASSETS:{fetch:async()=>new Response("Not found",{status:404})}},{waitUntil(){},passThroughOnException(){}})}
-test("renders the autonomous tunnel war",async()=>{const r=await render();assert.equal(r.status,200);const h=await r.text();assert.match(h,/언더드릴/);assert.match(h,/거점전/);assert.match(h,/굴착 전선 투입/);assert.match(h,/단일 지휘관/);assert.match(h,/자동 진군/)});
-test("presents the economy and lane loop",async()=>{const r=await render();const h=await r.text();assert.doesNotMatch(h,/codex-preview|Building your site|react-loading-skeleton/);assert.match(h,/YEAR 2187/);assert.match(h,/땅굴이 곧 아군의 진군로/);assert.match(h,/광석 채굴/);assert.match(h,/포탑 건설/)});

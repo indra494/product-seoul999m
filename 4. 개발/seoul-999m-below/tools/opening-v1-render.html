@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>서울 지하 999M 오프닝 v1 렌더러</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { display: block; width: 1920px; height: 1080px; background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="opening" width="1920" height="1080"></canvas>
+  <script>
+    const W = 1920;
+    const H = 1080;
+    const FPS = 30;
+    const DURATION = 45;
+    const ASSET_ROOT = "../../../3. 설계/영상/프롤로그/v1/images/";
+    const canvas = document.querySelector("#opening");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    const scenes = [
+      {
+        start: 0,
+        end: 7.2,
+        image: "scene-01-dead-seoul.png",
+        lines: ["환경오염으로 지상은", "사람이 살 수 없는 곳이 되었다."],
+        panX: -0.035,
+        panY: 0.01,
+        zoom: [1.02, 1.10],
+      },
+      {
+        start: 7.2,
+        end: 14.4,
+        image: "scene-02-descent.png",
+        lines: ["인류는 숨을 쉬기 위해 내려갔다.", "지하 999미터까지."],
+        panX: 0.02,
+        panY: 0.05,
+        zoom: [1.04, 1.12],
+      },
+      {
+        start: 14.4,
+        end: 21.6,
+        image: "scene-03-underground-seoul.png",
+        lines: ["서울도 그곳에 새로운 도시를 세웠다.", "햇빛 대신, 조명만이 남았다."],
+        panX: -0.03,
+        panY: 0,
+        zoom: [1.02, 1.08],
+      },
+      {
+        start: 21.6,
+        end: 28.8,
+        image: "scene-04-secret-tunnels.png",
+        lines: ["도시들은 비밀 터널로 이어졌고,", "연구자들은 지상을 되살릴 방법을 찾았다."],
+        panX: 0.035,
+        panY: 0.015,
+        zoom: [1.03, 1.10],
+      },
+      {
+        start: 28.8,
+        end: 37.2,
+        image: "scene-05-discovery.png",
+        lines: ["나는 서울의 ‘두더지’다.", "오늘도 자원과 새로운 길을 찾아 땅을 판다."],
+        panX: 0.045,
+        panY: -0.01,
+        zoom: [1.02, 1.13],
+      },
+    ];
+
+    const imageNames = [...scenes.map((scene) => scene.image), "logo.png"];
+    const images = new Map();
+    let audioContext;
+    let audioDestination;
+    let lastTypedKey = "";
+    let lastTypedCount = 0;
+
+    const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+    const smooth = (value) => {
+      const t = clamp(value);
+      return t * t * (3 - 2 * t);
+    };
+
+    function removeNearWhiteLogoBackground(image) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = image.width;
+      offscreen.height = image.height;
+      const offscreenContext = offscreen.getContext("2d");
+      offscreenContext.drawImage(image, 0, 0);
+      const pixels = offscreenContext.getImageData(0, 0, image.width, image.height);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const red = pixels.data[index];
+        const green = pixels.data[index + 1];
+        const blue = pixels.data[index + 2];
+        const minimum = Math.min(red, green, blue);
+        const maximum = Math.max(red, green, blue);
+        if (minimum > 215 && maximum - minimum < 12) {
+          const keep = 1 - smooth((minimum - 215) / 24);
+          pixels.data[index + 3] = Math.round(pixels.data[index + 3] * keep);
+        }
+      }
+      offscreenContext.clearRect(0, 0, image.width, image.height);
+      offscreenContext.putImageData(pixels, 0, 0);
+      return offscreen;
+    }
+
+    function loadImage(name) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => {
+          images.set(name, name === "logo.png" ? removeNearWhiteLogoBackground(image) : image);
+          resolve();
+        };
+        image.onerror = reject;
+        image.src = ASSET_ROOT + name;
+      });
+    }
+
+    function drawCover(image, progress, scene, alpha = 1) {
+      const baseScale = Math.max(W / image.width, H / image.height);
+      const zoom = scene.zoom[0] + (scene.zoom[1] - scene.zoom[0]) * smooth(progress);
+      const scale = baseScale * zoom;
+      const drawWidth = image.width * scale;
+      const drawHeight = image.height * scale;
+      const travelX = scene.panX * W * (progress - 0.5);
+      const travelY = scene.panY * H * (progress - 0.5);
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(
+        image,
+        (W - drawWidth) / 2 + travelX,
+        (H - drawHeight) / 2 + travelY,
+        drawWidth,
+        drawHeight,
+      );
+      ctx.restore();
+    }
+
+    function drawVignette() {
+      const bottom = ctx.createLinearGradient(0, H * 0.48, 0, H);
+      bottom.addColorStop(0, "rgba(0,0,0,0)");
+      bottom.addColorStop(0.58, "rgba(0,0,0,0.28)");
+      bottom.addColorStop(1, "rgba(0,0,0,0.92)");
+      ctx.fillStyle = bottom;
+      ctx.fillRect(0, 0, W, H);
+
+      const radial = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, W * 0.72);
+      radial.addColorStop(0, "rgba(0,0,0,0)");
+      radial.addColorStop(1, "rgba(0,0,0,0.67)");
+      ctx.fillStyle = radial;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    function playTypeClick() {
+      if (!audioContext || !audioDestination) return;
+      const duration = 0.018;
+      const count = Math.floor(audioContext.sampleRate * duration);
+      const buffer = audioContext.createBuffer(1, count, audioContext.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < count; i += 1) {
+        const falloff = 1 - i / count;
+        data[i] = (Math.random() * 2 - 1) * falloff * 0.06;
+      }
+      const source = audioContext.createBufferSource();
+      const filter = audioContext.createBiquadFilter();
+      filter.type = "bandpass";
+      filter.frequency.value = 1150;
+      filter.Q.value = 1.6;
+      source.buffer = buffer;
+      source.connect(filter).connect(audioDestination);
+      source.start();
+    }
+
+    function drawTypedLines(lines, sceneTime, key, centerY = 835) {
+      const full = lines.join("\n");
+      const delay = 0.72;
+      const charRate = 10.5;
+      const count = clamp(Math.floor((sceneTime - delay) * charRate), 0, Array.from(full).length);
+      const typed = Array.from(full).slice(0, count).join("");
+
+      if (key !== lastTypedKey) {
+        lastTypedKey = key;
+        lastTypedCount = 0;
+      }
+      if (count > lastTypedCount && count < Array.from(full).length) {
+        const latest = Array.from(full)[count - 1];
+        if (latest && !/[\s.,!?‘’]/.test(latest)) playTypeClick();
+        lastTypedCount = count;
+      }
+
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "600 48px 'Malgun Gothic', 'Noto Sans KR', sans-serif";
+      ctx.fillStyle = "#e3dfd2";
+      ctx.shadowColor = "rgba(0,0,0,0.96)";
+      ctx.shadowBlur = 18;
+      ctx.lineWidth = 7;
+      ctx.strokeStyle = "rgba(0,0,0,0.82)";
+
+      const typedLines = typed.split("\n");
+      const lineHeight = 74;
+      const firstY = centerY - ((typedLines.length - 1) * lineHeight) / 2;
+      typedLines.forEach((line, index) => {
+        const y = firstY + index * lineHeight;
+        ctx.strokeText(line, W / 2, y);
+        ctx.fillText(line, W / 2, y);
+      });
+
+      if (count < Array.from(full).length && Math.floor(sceneTime * 3) % 2 === 0) {
+        const activeLine = typedLines.at(-1) || "";
+        const width = ctx.measureText(activeLine).width;
+        const cursorY = firstY + (typedLines.length - 1) * lineHeight;
+        ctx.fillStyle = "#6bb6b5";
+        ctx.fillRect(W / 2 + width / 2 + 11, cursorY - 25, 4, 50);
+      }
+      ctx.restore();
+    }
+
+    function drawScene(t) {
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+
+      const sceneIndex = scenes.findIndex((scene) => t >= scene.start && t < scene.end);
+      if (sceneIndex >= 0) {
+        const scene = scenes[sceneIndex];
+        const sceneTime = t - scene.start;
+        const progress = sceneTime / (scene.end - scene.start);
+        drawCover(images.get(scene.image), progress, scene);
+
+        const transition = 0.75;
+        if (sceneIndex > 0 && sceneTime < transition) {
+          const previous = scenes[sceneIndex - 1];
+          drawCover(images.get(previous.image), 1, previous, 1 - smooth(sceneTime / transition));
+        }
+
+        drawVignette();
+        const fadeIn = smooth(sceneTime / 0.8);
+        const fadeOut = smooth((scene.end - t) / 0.65);
+        ctx.save();
+        ctx.globalAlpha = Math.min(fadeIn, fadeOut);
+        drawTypedLines(scene.lines, sceneTime, `scene-${sceneIndex}`);
+        ctx.restore();
+      } else if (t < 40.5) {
+        const cardTime = t - 37.2;
+        const alpha = Math.min(smooth(cardTime / 0.8), smooth((40.5 - t) / 0.8));
+        ctx.save();
+        ctx.globalAlpha = alpha;
+        drawTypedLines(["그날, 열어서는 안 될 길을", "열기 전까지는."], cardTime, "final-card", 520);
+        ctx.restore();
+      } else {
+        const logoTime = t - 40.5;
+        const logo = images.get("logo.png");
+        const appear = smooth(logoTime / 1.2);
+        const fadeOut = smooth((DURATION - t) / 0.75);
+        const scale = 0.73 + appear * 0.05;
+        const maxWidth = 1280 * scale;
+        const maxHeight = 780 * scale;
+        const imageScale = Math.min(maxWidth / logo.width, maxHeight / logo.height);
+        const width = logo.width * imageScale;
+        const height = logo.height * imageScale;
+        ctx.save();
+        ctx.globalAlpha = appear * fadeOut;
+        ctx.shadowColor = "rgba(76, 170, 170, 0.28)";
+        ctx.shadowBlur = 32;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(logo, (W - width) / 2, (H - height) / 2 - 12, width, height);
+        ctx.restore();
+      }
+
+      const grainSeed = Math.floor(t * FPS) * 1664525 + 1013904223;
+      ctx.save();
+      ctx.globalAlpha = 0.035;
+      ctx.fillStyle = grainSeed % 2 ? "#d8ccb5" : "#274445";
+      for (let i = 0; i < 90; i += 1) {
+        const x = (grainSeed * (i + 3) * 17) % W;
+        const y = (grainSeed * (i + 11) * 29) % H;
+        ctx.fillRect(x, y, 2, 2);
+      }
+      ctx.restore();
+    }
+
+    async function createAudioTrack() {
+      audioContext = new AudioContext({ sampleRate: 48000 });
+      await audioContext.resume();
+      audioDestination = audioContext.createMediaStreamDestination();
+
+      const lowpass = audioContext.createBiquadFilter();
+      lowpass.type = "lowpass";
+      lowpass.frequency.value = 130;
+      lowpass.Q.value = 0.8;
+      lowpass.connect(audioDestination);
+
+      const humGain = audioContext.createGain();
+      humGain.gain.value = 0.035;
+      humGain.connect(lowpass);
+
+      [43, 67].forEach((frequency, index) => {
+        const oscillator = audioContext.createOscillator();
+        oscillator.type = index === 0 ? "sine" : "triangle";
+        oscillator.frequency.value = frequency;
+        oscillator.connect(humGain);
+        oscillator.start();
+        oscillator.stop(audioContext.currentTime + DURATION + 1);
+      });
+
+      return audioDestination.stream.getAudioTracks()[0];
+    }
+
+    window.renderOpening = async () => {
+      const audioTrack = await createAudioTrack();
+      const canvasStream = canvas.captureStream(FPS);
+      const stream = new MediaStream([...canvasStream.getVideoTracks(), audioTrack]);
+      const preferred = "video/mp4;codecs=avc1.42E01E";
+      const mimeType = MediaRecorder.isTypeSupported(preferred) ? preferred : "video/mp4";
+      const recorder = new MediaRecorder(stream, {
+        mimeType,
+        videoBitsPerSecond: 4_200_000,
+        audioBitsPerSecond: 96_000,
+      });
+      const chunks = [];
+      recorder.addEventListener("dataavailable", (event) => {
+        if (event.data.size > 0) chunks.push(event.data);
+      });
+
+      const stopped = new Promise((resolve, reject) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+        recorder.addEventListener("error", reject, { once: true });
+      });
+
+      recorder.start(1000);
+      const startedAt = performance.now();
+      await new Promise((resolve) => {
+        function frame(now) {
+          const elapsed = Math.min((now - startedAt) / 1000, DURATION);
+          drawScene(elapsed);
+          if (elapsed >= DURATION) {
+            resolve();
+            return;
+          }
+          requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+      });
+      recorder.stop();
+      await stopped;
+
+      stream.getTracks().forEach((track) => track.stop());
+      await audioContext.close();
+      const blob = new Blob(chunks, { type: mimeType });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = "seoul-999m-opening-v1.mp4";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return { size: blob.size, mimeType, duration: DURATION };
+    };
+
+    Promise.all(imageNames.map(loadImage)).then(() => {
+      drawScene(0);
+      window.__openingReady = true;
+    });
+  </script>
+</body>
+</html>
