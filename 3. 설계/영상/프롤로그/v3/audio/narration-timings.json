@@ -1,0 +1,50 @@
+{
+  "voice": "Microsoft Heami Desktop",
+  "gender": "Female",
+  "culture": "ko-KR",
+  "rate": 10,
+  "duration": 26.3386,
+  "gapSeconds": 0.08,
+  "segments": [
+    {
+      "index": 0,
+      "start": 0.0,
+      "end": 2.9278
+    },
+    {
+      "index": 1,
+      "start": 3.0078,
+      "end": 4.1812
+    },
+    {
+      "index": 2,
+      "start": 4.2612,
+      "end": 7.3539
+    },
+    {
+      "index": 3,
+      "start": 7.4339,
+      "end": 11.6356
+    },
+    {
+      "index": 4,
+      "start": 11.7156,
+      "end": 15.892
+    },
+    {
+      "index": 5,
+      "start": 15.972,
+      "end": 20.3136
+    },
+    {
+      "index": 6,
+      "start": 20.3936,
+      "end": 24.5054
+    },
+    {
+      "index": 7,
+      "start": 24.5854,
+      "end": 26.3386
+    }
+  ]
+}

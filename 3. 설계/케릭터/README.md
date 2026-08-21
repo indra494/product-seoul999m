@@ -47,8 +47,23 @@
 | 강력한 | 콘셉트 | `휴먼/강력한/콘셉트/v2/human-kang-ryeokhan-concept-v2-longhair-bgrade.png` | 현재 시안 |
 | 버그본 4인 | 로스터 콘셉트 | `버그본/로스터/콘셉트/v1/bugborn-playable-roster-concept-v1.png` | v1 검토 시안 |
 | AI 로봇 4인 | 로스터 콘셉트 | `AI로봇/로스터/콘셉트/v1/ai-robot-playable-roster-concept-v1.png` | v1 검토 시안 |
+| 휴먼 3인 | 공용 액션 아틀라스 원본 | `공통/게임스프라이트/v1/human-roster-actions-v1-source.png` | 김씨·안서나·강력한 1차 게임 적용 |
+| 버그본 4인 | 공용 액션 아틀라스 원본 | `공통/게임스프라이트/v1/bugborn-roster-actions-v1-source.png` | 4명 1차 게임 적용 |
+| AI 로봇 4인 | 공용 액션 아틀라스 원본 | `공통/게임스프라이트/v1/ai-roster-actions-v1-source.png` | 4명 1차 게임 적용 |
+| 휴먼 3인 | 정면·후면 이동 원본 | `공통/게임스프라이트/v2/human-roster-vertical-v2-source.png` | 4방향 이동 적용 |
+| 버그본 4인 | 정면·후면 이동 원본 | `공통/게임스프라이트/v2/bugborn-roster-vertical-v2-source.png` | 4방향 이동 적용 |
+| AI 로봇 4인 | 정면·후면 이동 원본 | `공통/게임스프라이트/v2/ai-roster-vertical-v2-source.png` | C-999 포함 4방향 이동 적용 |
+| 휴먼 3인 | 기술별 핵심 자세 원본 | `공통/게임스프라이트/v3/human-roster-skill-poses-v3-source.png` | 1·2·3·4번 고유 자세 적용 |
+| 버그본 4인 | 기술별 핵심 자세 원본 | `공통/게임스프라이트/v3/bugborn-roster-skill-poses-v3-source.png` | 1·2·3·4번 고유 자세 적용 |
+| AI 로봇 4인 | 기술별 핵심 자세 원본 | `공통/게임스프라이트/v3/ai-roster-skill-poses-v3-source.png` | C-999 포함 1·2·3·4번 고유 자세 적용 |
 
 유승천 액션 포즈 v1은 노란 검과 반대 손 배치 오류가 있는 폐기 기준이지만 변경 이력을 위해 보존한다. 나머지 이전 콘셉트는 과거 시안으로 보존한다.
+
+공용 액션 아틀라스 v1은 전원 플레이 가능 여부를 검증하기 위한 1차 런타임 자료다. 각 행은 한 캐릭터, 6열은 대기·이동 2프레임·공격 2프레임·피격/전투불능을 나타낸다. 유승천 수준의 4방향 개별 동작과 전용 기술 시트로 교체하기 전까지 임시 승인 상태로 관리한다.
+
+공용 이동 아틀라스 v2는 v1의 옆모습을 보완한다. 4열은 `정면 대기·정면 걸음·후면 대기·후면 걸음`이며, 런타임 정규화본은 `public/assets/characters/sprites/roster-v2/`에 둔다. 생성 원본은 덮어쓰지 않고 `scripts/prepare-hero-vertical-atlas.mjs`로 128px 고정 격자에 변환한다.
+
+기술 자세 아틀라스 v3는 각 행을 캐릭터, 4열을 `기술 1·기술 2·전략 굴착 3·필살기 4`로 사용한다. 손에 든 실제 장비가 기술을 수행하는 한 장짜리 핵심 자세이며, 런타임은 대기 준비 → v3 핵심 자세 → 대기 회수 순서와 순수 VFX를 조합한다. 정규화본은 `public/assets/characters/sprites/roster-v3/`, 변환 스크립트는 `scripts/prepare-hero-skill-atlas.mjs`다.
 
 ## 관련 문서
 

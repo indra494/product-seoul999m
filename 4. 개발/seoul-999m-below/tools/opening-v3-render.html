@@ -1,0 +1,395 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>서울 지하 999M 오프닝 v3 렌더러</title>
+  <style>
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas { display: block; width: 1920px; height: 1080px; background: #000; }
+  </style>
+</head>
+<body>
+  <canvas id="opening" width="1920" height="1080"></canvas>
+  <script>
+    const params = new URLSearchParams(location.search);
+    const VERSION = params.get("version") || "v3";
+    const W = 1920;
+    const H = 1080;
+    const FPS = 30;
+    const DURATION = Number(params.get("duration") || 30);
+    const NARRATION_START = Number(params.get("narrationStart") || 0.5);
+    const LOGO_START = Number(params.get("logoStart") || 27.55);
+    const MUSIC_GAIN = Number(params.get("musicGain") || 0.33);
+    const ASSET_ROOT = `../../../3. 설계/영상/프롤로그/${VERSION}/`;
+    const canvas = document.querySelector("#opening");
+    const ctx = canvas.getContext("2d", { alpha: false });
+
+    const scenes = [
+      { image: "scene-01-dead-seoul.png", lines: ["지상은 죽었다.", "하늘은 독성 먼지로 뒤덮였고,", "인류는 더 이상 그곳에서 숨을 쉴 수 없었다."], panX: -0.025, panY: 0.01, zoom: [1.02, 1.08] },
+      { image: "scene-02-descent.png", lines: ["살아남은 사람들은", "땅속으로 내려갔다."], panX: 0.02, panY: 0.05, zoom: [1.04, 1.11] },
+      { image: "scene-03-air-purification-layer.png", lines: ["지하 999미터.", "과거에 건설된 공기 정화층이 아직 작동하는,", "마지막 생존 가능 구역이었다."], panX: -0.02, panY: 0.01, zoom: [1.02, 1.10] },
+      { image: "scene-04-underground-seoul.png", lines: ["서울도 그곳에 새로운 도시를 세웠다.", "전력망과 공장, 통신망은 무너졌고", "사람들은 버려진 기계와 고철을 이어 붙이며", "문명을 다시 시작했다."], panX: -0.03, panY: 0, zoom: [1.02, 1.09] },
+      { image: "scene-06-secret-tunnels.png", lines: ["세계의 지하 도시들은 비밀 터널로 연결되었다.", "자원과 연구 자료가 오갔고,", "각 도시의 연구자들은 언젠가 지상을 되살리기 위한", "연구를 계속했다."], panX: 0.035, panY: 0.01, zoom: [1.03, 1.10] },
+      { image: "scene-07-tunnel-threats.png", lines: ["하지만 터널을 통해 오간 것은 희망만이 아니었다.", "부족한 자원, 정체불명의 생물,", "그리고 주인을 잃은 기계들이", "도시 사이의 어둠을 차지하기 시작했다."], panX: -0.025, panY: -0.01, zoom: [1.04, 1.13] },
+      { image: "scene-08-discovery.png", lines: ["나는 서울의 ‘두더지’다.", "땅을 파고, 자원을 찾고,", "새로운 도시로 향하는 길을 만드는 사람.", "오늘도 평범한 굴착 작업이어야 했다."], panX: 0.03, panY: 0, zoom: [1.03, 1.12] },
+      { image: "scene-08-discovery.png", lines: ["우리가 먼저 이곳에 온 것이 아니라는 사실을", "발견하기 전까지는."], panX: 0.055, panY: -0.01, zoom: [1.10, 1.19] },
+    ];
+
+    const expectedText = [
+      "지상은 죽었다.",
+      "하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
+      "살아남은 사람들은 땅속으로 내려갔다.",
+      "지하 999미터. 과거에 건설된 공기 정화층이 아직 작동하는, 마지막 생존 가능 구역이었다.",
+      "서울도 그곳에 새로운 도시를 세웠다.",
+      "전력망과 공장, 통신망은 무너졌고 사람들은 버려진 기계와 고철을 이어 붙이며 문명을 다시 시작했다.",
+      "세계의 지하 도시들은 비밀 터널로 연결되었다.",
+      "자원과 연구 자료가 오갔고, 각 도시의 연구자들은 언젠가 지상을 되살리기 위한 연구를 계속했다.",
+      "하지만 터널을 통해 오간 것은 희망만이 아니었다.",
+      "부족한 자원, 정체불명의 생물, 그리고 주인을 잃은 기계들이 도시 사이의 어둠을 차지하기 시작했다.",
+      "나는 서울의 ‘두더지’다.",
+      "땅을 파고, 자원을 찾고, 새로운 도시로 향하는 길을 만드는 사람.",
+      "오늘도 평범한 굴착 작업이어야 했다.",
+      "우리가 먼저 이곳에 온 것이 아니라는 사실을 발견하기 전까지는.",
+    ];
+
+    const imageNames = [...new Set(scenes.map((scene) => scene.image)), "logo.png"];
+    const images = new Map();
+    let narrationBuffer;
+    let narrationTimings;
+    let audioContext;
+    let audioDestination;
+    let typeBus;
+    let lastTypedKey = "";
+    let lastTypedCount = 0;
+
+    const clamp = (value, min = 0, max = 1) => Math.max(min, Math.min(max, value));
+    const smooth = (value) => { const t = clamp(value); return t * t * (3 - 2 * t); };
+
+    function removeNearWhiteLogoBackground(image) {
+      const offscreen = document.createElement("canvas");
+      offscreen.width = image.width;
+      offscreen.height = image.height;
+      const target = offscreen.getContext("2d");
+      target.drawImage(image, 0, 0);
+      const pixels = target.getImageData(0, 0, image.width, image.height);
+      for (let index = 0; index < pixels.data.length; index += 4) {
+        const minimum = Math.min(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
+        const maximum = Math.max(pixels.data[index], pixels.data[index + 1], pixels.data[index + 2]);
+        if (minimum > 215 && maximum - minimum < 12) {
+          pixels.data[index + 3] = Math.round(pixels.data[index + 3] * (1 - smooth((minimum - 215) / 24)));
+        }
+      }
+      target.clearRect(0, 0, image.width, image.height);
+      target.putImageData(pixels, 0, 0);
+      return offscreen;
+    }
+
+    function loadImage(name) {
+      return new Promise((resolve, reject) => {
+        const image = new Image();
+        image.onload = () => { images.set(name, name === "logo.png" ? removeNearWhiteLogoBackground(image) : image); resolve(); };
+        image.onerror = reject;
+        image.src = `${ASSET_ROOT}images/${name}`;
+      });
+    }
+
+    async function loadNarration() {
+      const [audioResponse, timingResponse] = await Promise.all([
+        fetch(`${ASSET_ROOT}audio/narration-female-heami.wav`),
+        fetch(`${ASSET_ROOT}audio/narration-timings.json`),
+      ]);
+      const bytes = await audioResponse.arrayBuffer();
+      narrationTimings = await timingResponse.json();
+      const decodeContext = new AudioContext({ sampleRate: 48000 });
+      narrationBuffer = await decodeContext.decodeAudioData(bytes);
+      await decodeContext.close();
+      narrationTimings.segments.forEach((timing, index) => {
+        scenes[index].start = NARRATION_START + timing.start;
+        scenes[index].end = NARRATION_START + timing.end + (index === scenes.length - 1 ? 0.35 : narrationTimings.gapSeconds);
+      });
+      if (scenes.at(-1).end > LOGO_START) throw new Error("Narration overlaps the logo section.");
+    }
+
+    function drawCover(image, progress, scene, alpha = 1) {
+      const baseScale = Math.max(W / image.width, H / image.height);
+      const zoom = scene.zoom[0] + (scene.zoom[1] - scene.zoom[0]) * smooth(progress);
+      const scale = baseScale * zoom;
+      const width = image.width * scale;
+      const height = image.height * scale;
+      ctx.save();
+      ctx.globalAlpha = alpha;
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(image, (W - width) / 2 + scene.panX * W * (progress - 0.5), (H - height) / 2 + scene.panY * H * (progress - 0.5), width, height);
+      ctx.restore();
+    }
+
+    function drawVignette() {
+      const bottom = ctx.createLinearGradient(0, H * 0.42, 0, H);
+      bottom.addColorStop(0, "rgba(0,0,0,0)");
+      bottom.addColorStop(0.54, "rgba(0,0,0,0.32)");
+      bottom.addColorStop(1, "rgba(0,0,0,0.94)");
+      ctx.fillStyle = bottom;
+      ctx.fillRect(0, 0, W, H);
+      const radial = ctx.createRadialGradient(W / 2, H / 2, H * 0.25, W / 2, H / 2, W * 0.72);
+      radial.addColorStop(0, "rgba(0,0,0,0)");
+      radial.addColorStop(1, "rgba(0,0,0,0.66)");
+      ctx.fillStyle = radial;
+      ctx.fillRect(0, 0, W, H);
+    }
+
+    function playTypeClick() {
+      if (!audioContext || !typeBus) return;
+      const now = audioContext.currentTime;
+      const oscillator = audioContext.createOscillator();
+      const gain = audioContext.createGain();
+      oscillator.type = "square";
+      oscillator.frequency.value = 720;
+      gain.gain.setValueAtTime(0.012, now);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.018);
+      oscillator.connect(gain).connect(typeBus);
+      oscillator.start(now);
+      oscillator.stop(now + 0.02);
+    }
+
+    function drawTypedLines(lines, sceneTime, sceneDuration, key) {
+      const full = lines.join("\n");
+      const characters = Array.from(full);
+      const revealDuration = Math.min(0.82, Math.max(0.42, sceneDuration * 0.24));
+      const count = clamp(Math.floor((sceneTime - 0.08) / revealDuration * characters.length), 0, characters.length);
+      const typed = characters.slice(0, count).join("");
+      if (key !== lastTypedKey) { lastTypedKey = key; lastTypedCount = 0; }
+      if (count - lastTypedCount >= 3 && count < characters.length) { playTypeClick(); lastTypedCount = count; }
+
+      ctx.save();
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.font = "600 43px 'Malgun Gothic', sans-serif";
+      ctx.fillStyle = "#e7e2d5";
+      ctx.shadowColor = "rgba(0,0,0,0.98)";
+      ctx.shadowBlur = 18;
+      ctx.lineWidth = 7;
+      ctx.strokeStyle = "rgba(0,0,0,0.86)";
+      const typedLines = typed.split("\n");
+      const lineHeight = 61;
+      const firstY = 838 - ((typedLines.length - 1) * lineHeight) / 2;
+      typedLines.forEach((line, index) => {
+        const y = firstY + index * lineHeight;
+        ctx.strokeText(line, W / 2, y);
+        ctx.fillText(line, W / 2, y);
+      });
+      ctx.restore();
+    }
+
+    function drawScene(t) {
+      ctx.fillStyle = "#000";
+      ctx.fillRect(0, 0, W, H);
+      if (t < NARRATION_START) {
+        drawCover(images.get(scenes[0].image), 0, scenes[0], smooth(t / 0.4));
+        drawVignette();
+      } else if (t < LOGO_START) {
+        let sceneIndex = scenes.findIndex((scene) => t >= scene.start && t < scene.end);
+        if (sceneIndex < 0) sceneIndex = scenes.length - 1;
+        const scene = scenes[sceneIndex];
+        const sceneTime = Math.max(0, t - scene.start);
+        const sceneDuration = scene.end - scene.start;
+        const progress = clamp(sceneTime / sceneDuration);
+        drawCover(images.get(scene.image), progress, scene);
+        if (sceneIndex > 0 && sceneTime < 0.34) {
+          const previous = scenes[sceneIndex - 1];
+          drawCover(images.get(previous.image), 1, previous, 1 - smooth(sceneTime / 0.34));
+        }
+        drawVignette();
+        ctx.save();
+        ctx.globalAlpha = Math.min(smooth(sceneTime / 0.25), smooth((scene.end - t) / 0.18));
+        drawTypedLines(scene.lines, sceneTime, sceneDuration, `scene-${sceneIndex}`);
+        ctx.restore();
+      } else {
+        const logoTime = t - LOGO_START;
+        const logo = images.get("logo.png");
+        const appear = smooth(logoTime / 0.55);
+        const fadeOut = smooth((DURATION - t) / 0.42);
+        const imageScale = Math.min(950 / logo.width, 650 / logo.height) * (0.96 + appear * 0.04);
+        const width = logo.width * imageScale;
+        const height = logo.height * imageScale;
+        ctx.save();
+        ctx.globalAlpha = appear * fadeOut;
+        ctx.shadowColor = "rgba(76,170,170,0.32)";
+        ctx.shadowBlur = 34;
+        ctx.imageSmoothingEnabled = false;
+        ctx.drawImage(logo, (W - width) / 2, (H - height) / 2 - 12, width, height);
+        ctx.restore();
+      }
+
+      const seed = Math.floor(t * FPS) * 1664525 + 1013904223;
+      ctx.save();
+      ctx.globalAlpha = 0.032;
+      ctx.fillStyle = seed % 2 ? "#d8ccb5" : "#274445";
+      for (let index = 0; index < 75; index += 1) {
+        ctx.fillRect((seed * (index + 3) * 17) % W, (seed * (index + 11) * 29) % H, 2, 2);
+      }
+      ctx.restore();
+    }
+
+    async function createAudioTrack() {
+      audioContext = new AudioContext({ sampleRate: 48000 });
+      await audioContext.resume();
+      audioDestination = audioContext.createMediaStreamDestination();
+      const now = audioContext.currentTime;
+      const compressor = audioContext.createDynamicsCompressor();
+      compressor.threshold.value = -18;
+      compressor.knee.value = 12;
+      compressor.ratio.value = 3;
+      compressor.connect(audioDestination);
+
+      const music = audioContext.createGain();
+      music.gain.setValueAtTime(MUSIC_GAIN, now);
+      music.gain.setValueAtTime(MUSIC_GAIN, now + LOGO_START);
+      music.gain.linearRampToValueAtTime(0.0001, now + DURATION);
+      music.connect(compressor);
+      typeBus = audioContext.createGain();
+      typeBus.gain.value = 0.32;
+      typeBus.connect(compressor);
+
+      const noiseBuffer = audioContext.createBuffer(1, audioContext.sampleRate * 3, audioContext.sampleRate);
+      const noiseData = noiseBuffer.getChannelData(0);
+      for (let index = 0; index < noiseData.length; index += 1) noiseData[index] = (Math.random() * 2 - 1) * 0.3;
+      const noise = audioContext.createBufferSource();
+      const noiseFilter = audioContext.createBiquadFilter();
+      const noiseGain = audioContext.createGain();
+      noise.buffer = noiseBuffer;
+      noise.loop = true;
+      noiseFilter.type = "lowpass";
+      noiseFilter.frequency.value = 155;
+      noiseGain.gain.value = 0.05;
+      noise.connect(noiseFilter).connect(noiseGain).connect(music);
+      noise.start(now);
+      noise.stop(now + DURATION + 1);
+
+      [36.71, 55, 73.42].forEach((frequency, index) => {
+        const oscillator = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        oscillator.type = index === 0 ? "sine" : "triangle";
+        oscillator.frequency.value = frequency;
+        gain.gain.value = [0.08, 0.028, 0.016][index];
+        oscillator.connect(gain).connect(music);
+        oscillator.start(now);
+        oscillator.stop(now + DURATION + 1);
+      });
+
+      const progression = [
+        [73.42, 87.31, 110],
+        [65.41, 82.41, 98],
+        [58.27, 73.42, 87.31],
+        [55, 69.3, 82.41],
+      ];
+      for (let step = 0, at = 0; at < LOGO_START; step += 1, at += 7) {
+        progression[step % progression.length].forEach((frequency, voice) => {
+          const oscillator = audioContext.createOscillator();
+          const filter = audioContext.createBiquadFilter();
+          const gain = audioContext.createGain();
+          const start = now + at;
+          const end = Math.min(now + at + 8.5, now + DURATION - 0.5);
+          oscillator.type = voice === 0 ? "triangle" : "sine";
+          oscillator.frequency.value = frequency;
+          filter.type = "lowpass";
+          filter.frequency.value = 360;
+          gain.gain.setValueAtTime(0.0001, start);
+          gain.gain.exponentialRampToValueAtTime(0.026 - voice * 0.004, start + 1.2);
+          gain.gain.setValueAtTime(0.021 - voice * 0.003, Math.max(start + 1.3, end - 1.5));
+          gain.gain.exponentialRampToValueAtTime(0.0001, end);
+          oscillator.connect(filter).connect(gain).connect(music);
+          oscillator.start(start);
+          oscillator.stop(end + 0.05);
+        });
+      }
+
+      const tension = audioContext.createOscillator();
+      const tensionFilter = audioContext.createBiquadFilter();
+      const tensionGain = audioContext.createGain();
+      tension.type = "sawtooth";
+      tension.frequency.value = 116.54;
+      tensionFilter.type = "bandpass";
+      tensionFilter.frequency.value = 155;
+      tensionFilter.Q.value = 3.5;
+      tensionGain.gain.setValueAtTime(0.0001, now + DURATION * 0.58);
+      tensionGain.gain.exponentialRampToValueAtTime(0.013, now + DURATION * 0.72);
+      tensionGain.gain.setValueAtTime(0.013, now + LOGO_START - 0.8);
+      tensionGain.gain.exponentialRampToValueAtTime(0.0001, now + LOGO_START + 0.4);
+      tension.connect(tensionFilter).connect(tensionGain).connect(music);
+      tension.start(now + DURATION * 0.58);
+      tension.stop(now + LOGO_START + 0.5);
+
+      for (let at = 1.5; at < LOGO_START; at += 3.05) {
+        const pulse = audioContext.createOscillator();
+        const gain = audioContext.createGain();
+        pulse.type = "sine";
+        pulse.frequency.setValueAtTime(52, now + at);
+        pulse.frequency.exponentialRampToValueAtTime(38, now + at + 0.5);
+        gain.gain.setValueAtTime(0.0001, now + at);
+        gain.gain.exponentialRampToValueAtTime(0.07, now + at + 0.025);
+        gain.gain.exponentialRampToValueAtTime(0.0001, now + at + 0.56);
+        pulse.connect(gain).connect(music);
+        pulse.start(now + at);
+        pulse.stop(now + at + 0.6);
+      }
+
+      const narration = audioContext.createBufferSource();
+      const voiceFilter = audioContext.createBiquadFilter();
+      const voiceGain = audioContext.createGain();
+      narration.buffer = narrationBuffer;
+      voiceFilter.type = "highpass";
+      voiceFilter.frequency.value = 75;
+      voiceGain.gain.value = 1.05;
+      narration.connect(voiceFilter).connect(voiceGain).connect(compressor);
+      narration.start(now + NARRATION_START);
+      narration.stop(now + NARRATION_START + narrationBuffer.duration + 0.05);
+      return audioDestination.stream.getAudioTracks()[0];
+    }
+
+    window.renderOpening = async () => {
+      const audioTrack = await createAudioTrack();
+      const canvasStream = canvas.captureStream(FPS);
+      const stream = new MediaStream([...canvasStream.getVideoTracks(), audioTrack]);
+      const preferred = "video/mp4;codecs=avc1.42E01E";
+      const mimeType = MediaRecorder.isTypeSupported(preferred) ? preferred : "video/mp4";
+      const recorder = new MediaRecorder(stream, { mimeType, videoBitsPerSecond: 3_500_000, audioBitsPerSecond: 160_000 });
+      const chunks = [];
+      recorder.addEventListener("dataavailable", (event) => { if (event.data.size > 0) chunks.push(event.data); });
+      const stopped = new Promise((resolve, reject) => {
+        recorder.addEventListener("stop", resolve, { once: true });
+        recorder.addEventListener("error", reject, { once: true });
+      });
+      recorder.start(1000);
+      const startedAt = performance.now();
+      await new Promise((resolve) => {
+        function frame(now) {
+          const elapsed = Math.min((now - startedAt) / 1000, DURATION);
+          drawScene(elapsed);
+          if (elapsed >= DURATION) resolve(); else requestAnimationFrame(frame);
+        }
+        requestAnimationFrame(frame);
+      });
+      recorder.stop();
+      await stopped;
+      stream.getTracks().forEach((track) => track.stop());
+      await audioContext.close();
+      const blob = new Blob(chunks, { type: mimeType });
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(blob);
+      link.download = `seoul-999m-opening-${VERSION}.mp4`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      return { size: blob.size, mimeType, duration: DURATION, narrationDuration: narrationBuffer.duration };
+    };
+
+    Promise.all([...imageNames.map(loadImage), loadNarration()]).then(() => {
+      const actualText = scenes.flatMap((scene) => scene.lines).join(" ").replaceAll("\n", " ");
+      const referenceText = expectedText.join(" ");
+      if (actualText !== referenceText) throw new Error("Opening text differs from the approved 14 sentences.");
+      drawScene(0);
+      window.__openingReady = true;
+    }).catch((error) => { window.__openingError = String(error.stack || error); console.error(error); });
+  </script>
+</body>
+</html>
