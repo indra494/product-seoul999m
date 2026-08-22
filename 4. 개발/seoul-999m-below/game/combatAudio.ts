@@ -33,6 +33,8 @@ const THEMES: Record<BattleMapId, Theme> = {
   "root-lab": { bpm: 86, root: 43, bass: [0, 1, 6, 0, 4, 1, 8, 6], signal: [13, 8, 14, 7, 11], wave: "sawtooth", swing: 0.22 },
   "freight-fork": { bpm: 104, root: 49, bass: [0, 0, 7, 5, 3, 3, 10, 7], signal: [12, 10, 15, 7], wave: "square", swing: 0.05 },
   "thermal-shaft": { bpm: 112, root: 52, bass: [0, 5, 3, 8, 7, 3, 10, 8], signal: [12, 14, 17, 15, 19], wave: "sawtooth", swing: 0.11 },
+  "sealed-bunker": { bpm: 96, root: 39, bass: [0, 1, 0, 6, 3, 1, 8, 6], signal: [12, 13, 7, 10], wave: "square", swing: 0.13 },
+  "ore-catacomb": { bpm: 84, root: 44, bass: [0, 5, 0, 3, 7, 5, 10, 3], signal: [12, 15, 10, 17], wave: "triangle", swing: 0.18 },
 };
 
 const semitone = (root: number, step: number) => root * 2 ** (step / 12);
@@ -55,8 +57,8 @@ export class CombatAudio {
       this.master = this.context.createGain();
       this.music = this.context.createGain();
       this.effects = this.context.createGain();
-      this.master.gain.value = 0.72;
-      this.music.gain.value = 0.34;
+      this.master.gain.value = 0.82;
+      this.music.gain.value = 0.62;
       this.effects.gain.value = 0.78;
       this.music.connect(this.master);
       this.effects.connect(this.master);
@@ -72,8 +74,8 @@ export class CombatAudio {
     this.mapId = mapId;
     const theme = THEMES[mapId], now = context.currentTime;
     for (const [frequency, gainValue, type] of [
-      [theme.root, 0.045, "sine"],
-      [theme.root * 1.5, 0.014, theme.wave],
+      [theme.root, 0.09, "sine"],
+      [theme.root * 1.5, 0.032, theme.wave],
     ] as const) {
       const oscillator = context.createOscillator(), gain = context.createGain();
       oscillator.type = type;
@@ -96,10 +98,10 @@ export class CombatAudio {
     const index = this.beat++, at = context.currentTime + (index % 2 ? theme.swing * 0.08 : 0),
       bassStep = theme.bass[index % theme.bass.length],
       signalStep = theme.signal[Math.floor(index / 2) % theme.signal.length];
-    this.note(semitone(theme.root, bassStep), at, 0.32, index % 4 === 0 ? 0.07 : 0.042, theme.wave, this.music);
+    this.note(semitone(theme.root, bassStep), at, 0.32, index % 4 === 0 ? 0.1 : 0.064, theme.wave, this.music);
     if (index % 2 === 0)
-      this.note(semitone(theme.root, signalStep), at + 0.03, 0.18, 0.018, "triangle", this.music);
-    if (index % 8 === 6) this.noise(at, 0.16, 0.012, this.music, 520);
+      this.note(semitone(theme.root, signalStep), at + 0.03, 0.18, 0.032, "triangle", this.music);
+    if (index % 8 === 6) this.noise(at, 0.16, 0.018, this.music, 520);
   }
 
   private note(frequency: number, at: number, duration: number, volume: number, type: OscillatorType, destination: AudioNode) {

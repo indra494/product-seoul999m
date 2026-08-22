@@ -7,11 +7,15 @@ export type BattleMapDefinition = {
   description: string;
   tacticalTags: string[];
   bpm: number;
-  hazard: "none" | "water" | "roots" | "split" | "steam";
+  hazard: "none" | "water" | "roots" | "split" | "steam" | "maze";
   spawns: {
     blue: { x: number; y: number };
     red: { x: number; y: number };
   };
+  spawnPairs: readonly {
+    blue: { x: number; y: number };
+    red: { x: number; y: number };
+  }[];
 };
 
 export type BattleMapTile = {
@@ -29,6 +33,13 @@ const STANDARD_SPAWNS = {
   red: { x: 49, y: 18 },
 } as const;
 
+const RANDOM_SPAWN_PAIRS = [
+  { blue: { x: 6, y: 18 }, red: { x: 49, y: 18 } },
+  { blue: { x: 10, y: 7 }, red: { x: 45, y: 29 } },
+  { blue: { x: 10, y: 29 }, red: { x: 45, y: 7 } },
+  { blue: { x: 27, y: 6 }, red: { x: 28, y: 30 } },
+] as const;
+
 export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
   {
     id: "central-exchange",
@@ -39,6 +50,7 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
     bpm: 92,
     hazard: "none",
     spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
   },
   {
     id: "flooded-pump",
@@ -49,6 +61,7 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
     bpm: 78,
     hazard: "water",
     spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
   },
   {
     id: "root-lab",
@@ -59,6 +72,7 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
     bpm: 86,
     hazard: "roots",
     spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
   },
   {
     id: "freight-fork",
@@ -69,6 +83,7 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
     bpm: 104,
     hazard: "split",
     spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
   },
   {
     id: "thermal-shaft",
@@ -79,8 +94,40 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
     bpm: 112,
     hazard: "steam",
     spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
+  },
+  {
+    id: "sealed-bunker",
+    name: "봉쇄 방공호",
+    subtitle: "고밀도 벽·교차 굴착전",
+    description: "거의 모든 공간이 막힌 채 시작해 소리와 시야 단서로 적 코어를 추적하는 전장",
+    tacticalTags: ["굴착", "은폐 거점", "기습"],
+    bpm: 96,
+    hazard: "maze",
+    spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
+  },
+  {
+    id: "ore-catacomb",
+    name: "광맥 카타콤",
+    subtitle: "자원벽·봉쇄실 연쇄전",
+    description: "광맥을 캐며 전투실을 연결하고 잘못 뚫은 통로를 다시 봉쇄하는 장기 전략 전장",
+    tacticalTags: ["고밀도 벽", "자원 경쟁", "장기전"],
+    bpm: 84,
+    hazard: "maze",
+    spawns: STANDARD_SPAWNS,
+    spawnPairs: RANDOM_SPAWN_PAIRS,
   },
 ] as const;
+
+export const resolveBattleSpawns = (definition: BattleMapDefinition, seed: number) => {
+  const mixed = Math.imul((seed ^ 0x9e3779b9) >>> 0, 2654435761) >>> 0,
+    pair = definition.spawnPairs[mixed % definition.spawnPairs.length],
+    swap = ((mixed >>> 7) & 1) === 1;
+  return swap
+    ? { blue: { ...pair.red }, red: { ...pair.blue } }
+    : { blue: { ...pair.blue }, red: { ...pair.red } };
+};
 
 export const battleMap = (id: BattleMapId) => {
   const definition = BATTLE_MAPS.find((map) => map.id === id);
@@ -156,7 +203,7 @@ export const applyBattleMapLayout = (
     carveRect(24, 7, 31, 11, { type: 0, hp: 0, max: 0, surface: "platform" });
     carveRect(24, 25, 31, 29, { type: 0, hp: 0, max: 0, surface: "platform" });
     wallRect(26, 13, 29, 23, "ledge");
-  } else {
+  } else if (id === "thermal-shaft") {
     carveLane([[6, 18], [49, 18]], 1);
     carveLane([[6, 18], [15, 9], [40, 9], [49, 18]], 1);
     carveLane([[6, 18], [15, 27], [40, 27], [49, 18]], 1);
@@ -167,6 +214,24 @@ export const applyBattleMapLayout = (
       carveRect(x0, y0, x1, y1, { type: 0, hp: 0, max: 0, hazard: "steam" });
     wallRect(23, 13, 25, 15, "ledge");
     wallRect(30, 21, 32, 23, "ledge");
+  } else if (id === "sealed-bunker") {
+    // 열린 고속도로 대신 작은 방과 끊긴 굴착선만 제공한다.
+    for (const [x, y] of [[10, 8], [27, 8], [45, 8], [10, 27], [27, 27], [45, 27]] as const)
+      carveRect(x - 3, y - 2, x + 3, y + 2);
+    carveLane([[8, 18], [17, 18]], 1);
+    carveLane([[38, 18], [47, 18]], 1);
+    wallRect(25, 12, 30, 15, "ledge");
+    wallRect(25, 21, 30, 24, "ledge");
+  } else {
+    for (const [x, y] of [[9, 7], [27, 6], [46, 8], [8, 28], [28, 29], [46, 27], [18, 18], [37, 18]] as const)
+      carveRect(x - 2, y - 2, x + 2, y + 2, { type: 0, hp: 0, max: 0, surface: "platform" });
+    for (let y = 5; y < rows - 5; y += 6)
+      for (let x = 6 + (y % 12); x < cols - 6; x += 9)
+        put(x, y, { type: 3, hp: 7, max: 7, ore: 28 });
+    wallRect(25, 12, 30, 16, "ledge");
+    wallRect(25, 20, 30, 24, "ledge");
   }
   openBases();
+  for (const pair of RANDOM_SPAWN_PAIRS)
+    for (const core of [pair.blue, pair.red]) carveRect(core.x - 3, core.y - 3, core.x + 3, core.y + 3);
 };

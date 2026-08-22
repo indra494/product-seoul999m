@@ -30,7 +30,7 @@ const reachableWithDigging = (grid, start, goal) => {
   return seen.has(`${goal.x},${goal.y}`);
 };
 
-test("all five maps stay symmetric in spawn distance and remain dig-connectable", () => {
+test("all seven maps stay symmetric in spawn distance and remain dig-connectable", () => {
   for (const map of BATTLE_MAPS) {
     const grid = blankGrid();
     applyBattleMapLayout(grid, map.id);

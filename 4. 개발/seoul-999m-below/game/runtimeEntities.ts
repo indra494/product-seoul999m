@@ -47,6 +47,7 @@ export type Unit = {
   arenaActionStartedAt?: number;
   arenaActionDuration?: number;
   arenaActionUntil?: number;
+  ultimateLabelUntil?: number;
   arenaMoveUntil?: number;
   arenaMoveFromX?: number;
   arenaMoveFromY?: number;
@@ -76,6 +77,8 @@ export type Unit = {
   aiPreviousAction?: string;
   aiTargetId?: number;
   aiDecisionReason?: string;
+  aiSearchGoal?: { x: number; y: number };
+  aiSearchUntil?: number;
   onlinePlayerId?: string;
   networkController?: "remote" | "ai";
   remoteGoal?: { x: number; y: number };

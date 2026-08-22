@@ -12,13 +12,15 @@ export const HERO_SIDE_SOURCE_FACING_X: Record<string, -1 | 1> = {
   maedeup: -1,
   d09: 1,
   g77: 1,
-  r486: 1,
+  // R-486의 측면 대기/이동 원본은 왼쪽을 바라본다. 스킬 시트 기준과 분리한다.
+  r486: -1,
   c999: -1,
 };
 
 const HERO_SKILL_SOURCE_FACING_X: Record<string, readonly [-1 | 1, -1 | 1, -1 | 1, -1 | 1]> = {
   kimssi: [-1, -1, -1, 1],
-  "ahn-seona": [1, 1, 1, 1],
+  // 대기 시트(-1)는 이미 정상이다. 전용 스킬 시트 1/2/필살만 같은 기준으로 맞춘다.
+  "ahn-seona": [-1, -1, 1, -1],
   "kang-ryeokhan": [-1, 1, 1, 1],
   cheolgak: [-1, -1, -1, -1],
   sanmi: [-1, -1, -1, -1],
@@ -36,6 +38,7 @@ const HERO_SIDE_FRAME_SOURCE_FACING_X: Partial<Record<string, readonly [-1 | 1, 
   // 두 휴먼은 측면 시트 전체를 같은 기준 방향으로 고정한다.
   "ahn-seona": [-1, -1, -1, -1, -1, -1],
   "kang-ryeokhan": [1, 1, 1, 1, 1, 1],
+  r486: [-1, -1, -1, -1, -1, -1],
 };
 
 const HERO_BASIC_FRAMES: Partial<Record<string, readonly [number, number]>> = {

@@ -8,7 +8,9 @@ export type BattleMapId =
   | "flooded-pump"
   | "root-lab"
   | "freight-fork"
-  | "thermal-shaft";
+  | "thermal-shaft"
+  | "sealed-bunker"
+  | "ore-catacomb";
 
 export type MatchSlot = {
   id: string;

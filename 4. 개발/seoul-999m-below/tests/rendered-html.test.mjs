@@ -49,10 +49,10 @@ test("battle runtime uses shared factories, hero kits, smart brain, collision da
   hasAll(brain, ["retreat", "regroup", "support", "drill", "ultimate"]);
 });
 
-test("five tactical maps and five procedural music themes are wired into battle", async () => {
+test("seven tactical maps and procedural music themes are wired into battle", async () => {
   const [maps, audio, app] = await Promise.all([source("game/battleMaps.ts"), source("game/combatAudio.ts"), source("app/Seoul999mBelow.tsx")]);
-  for (const id of ["central-exchange", "flooded-pump", "root-lab", "freight-fork", "thermal-shaft"]) hasAll(maps + app + audio, [id]);
-  assert.equal((audio.match(/bpm:\s*\d+/g) ?? []).length, 5);
+  for (const id of ["central-exchange", "flooded-pump", "root-lab", "freight-fork", "thermal-shaft", "sealed-bunker", "ore-catacomb"]) hasAll(maps + app + audio, [id]);
+  assert.equal((audio.match(/bpm:\s*\d+/g) ?? []).length, 7);
   hasAll(audio, ["AudioContext", "class CombatAudio", "async start(", "async sfx("]);
 });
 
@@ -83,6 +83,6 @@ test("critical raster assets exist and have a PNG signature", async () => {
 
 test("battle UI includes health, talent, construction, utility, supply, and online room interfaces", async () => {
   const [app, css] = await Promise.all([source("app/Seoul999mBelow.tsx"), source("app/globals.css")]);
-  hasAll(app, ["hero-health", "talent-menu", "build-menu", "utilitybar", "supply-menu", "online-room"]);
-  hasAll(css, [".hero-health", ".talent-menu", ".build-menu", ".utilitybar", ".supply-menu", ".online-room"]);
+  hasAll(app, ["hero-health", "talent-menu", "build-menu", "utilitybar", "loadout-select", "online-room"]);
+  hasAll(css, [".hero-health", ".talent-menu", ".build-menu", ".utilitybar", ".loadout-select", ".online-room"]);
 });
