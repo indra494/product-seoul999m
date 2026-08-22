@@ -1,4 +1,6 @@
 "use client";
+/* Canvas simulation callbacks intentionally own mutable refs and imperative frame state. */
+/* eslint-disable react-hooks/refs, react-hooks/set-state-in-effect, react-hooks/purity, prefer-const */
 import {
   useEffect,
   useRef,
@@ -22,9 +24,13 @@ import {
 import { heroKit } from "../game/heroKits";
 import { heroAction } from "../game/heroActions";
 import { heroFramePlan } from "../game/heroPresentation";
+import { decideHeroAction, type HeroBrainRole } from "../game/heroBrain";
 import { BATTLE_MAPS, applyBattleMapLayout, battleMap } from "../game/battleMaps";
 import { CombatAudio, type CombatSfx } from "../game/combatAudio";
-import { createComputerMatch, type BattleMapId, type MatchConfig, type TeamSize } from "../game/matchConfig";
+import { createComputerMatch, createOnlineMatch, type BattleMapId, type MatchConfig, type TeamSize } from "../game/matchConfig";
+import { roomCanStart, type OnlineRoomView, type RoomClientIdentity } from "../game/onlineRoom";
+import type { OnlineBattleCommand, OnlineBattleSnapshot } from "../game/onlineRoom";
+import { createOnlineRoom, joinOnlineRoom, readOnlineRoom, sendOnlineBattleCommand, sendOnlineBattleSnapshot, updateOnlineRoom } from "../game/onlineRoomClient";
 import {
   createBuildableUnit,
   createCivilianUnit,
@@ -162,9 +168,7 @@ const COLS = 56,
     { x: 0, y: -1 },
   ],
   MINIMAP = { x: VW - 180, y: VH - 132, w: 168, h: 108 };
-const WALKABLE_TERRAIN = new Set([0, 9, 10, 11]),
-  PROJECTILE_TERRAIN = new Set([0, 8, 9, 10, 11]),
-  PERMANENT_TERRAIN = new Set([4, 6, 8]);
+const WALKABLE_TERRAIN = new Set([0, 9, 10, 11]);
 const BUILD_BY_ID = Object.fromEntries(
   BUILDABLES.map((def) => [def.id, def]),
 ) as Record<string, BuildableDefinition>;
@@ -196,8 +200,8 @@ export default function Seoul999mBelow() {
     [buildChoice, setBuildChoice] = useState<BuildMode>("none"),
     [buildMenuOpen, setBuildMenuOpen] = useState(false),
     [supplyMenuOpen, setSupplyMenuOpen] = useState(false),
-    [routeMenuOpen, setRouteMenuOpen] = useState(false),
-    [routeChoice, setRouteChoice] = useState<RouteId | "none">("none");
+    [, setRouteMenuOpen] = useState(false),
+    [, setRouteChoice] = useState<RouteId | "none">("none");
   const [paused, setPaused] = useState(false);
   const [menuPanel, setMenuPanel] = useState<"main" | "together" | "roster">(
       "main",
@@ -214,6 +218,9 @@ export default function Seoul999mBelow() {
     [skirmishTeamSize, setSkirmishTeamSize] = useState<TeamSize>(1),
     [selectedMapId, setSelectedMapId] = useState<BattleMapId>("central-exchange"),
     [activeMatchConfig, setActiveMatchConfig] = useState<MatchConfig | null>(null),
+    [onlineRoom, setOnlineRoom] = useState<OnlineRoomView | null>(null),
+    [onlineIdentity, setOnlineIdentity] = useState<RoomClientIdentity | null>(null),
+    [onlineBusy, setOnlineBusy] = useState(false),
     [talentPrompt, setTalentPrompt] = useState<3 | 5 | null>(null);
   const [hud, setHud] = useState({
       ally: 600,
@@ -248,9 +255,21 @@ export default function Seoul999mBelow() {
     mobileMove = useRef<{ x: number; y: number } | null>(null),
     pausedRef = useRef(false),
     talentPromptRef = useRef<3 | 5 | null>(null),
+    onlineStartedRef = useRef(false),
+    onlineCommandInboxRef = useRef<OnlineBattleCommand[]>([]),
+    lastOnlineCommandRef = useRef(0),
+    lastOnlineSnapshotRef = useRef(0),
+    onlineSnapshotRef = useRef<OnlineBattleSnapshot | null>(null),
+    onlineAiPlayersRef = useRef<Set<string>>(new Set()),
     isCampaign = gameMode === "campaign1";
   const command = (v: string) => {
-      if (!pausedRef.current) commands.current.push(v);
+      if (!pausedRef.current) {
+        commands.current.push(v);
+        if (v === "skill1") publishOnlineInput({ type: "skill", slot: 1 });
+        else if (v === "release2") publishOnlineInput({ type: "skill", slot: 2 });
+        else if (v === "release3") publishOnlineInput({ type: "skill", slot: 4 });
+        else if (v === "skill4") publishOnlineInput({ type: "drill" });
+      }
     },
     chooseTalent = (id: string) => {
       commands.current.push(`talent:${id}`);
@@ -373,6 +392,145 @@ export default function Seoul999mBelow() {
       `${HEROES.find((hero) => hero.id === heroId)?.name ?? "대원"} 지하 투입`,
     );
     setScreen("play");
+  };
+  const roomHero = HEROES.find((hero) => hero.id === selectedHeroId) ?? HEROES[0];
+  const createRoom = async () => {
+    if (onlineBusy) return;
+    setOnlineBusy(true);
+    try {
+      const result = await createOnlineRoom({
+        nickname, heroId: roomHero.id, faction: roomHero.faction,
+        teamSize: skirmishTeamSize, mapId: selectedMapId,
+      });
+      setOnlineRoom(result.room);
+      setOnlineIdentity(result.identity);
+      setRoomCode(result.room.code);
+      window.localStorage.setItem(`seoul999m-room-${result.room.code}`, JSON.stringify({ ...result.identity, nickname }));
+      setLobbyNotice(`방 ${result.room.code} 생성 · 참가자를 기다리는 중`);
+      onlineStartedRef.current = false;
+    } catch (error) {
+      setLobbyNotice(error instanceof Error ? error.message : "방 생성 실패");
+    } finally { setOnlineBusy(false); }
+  };
+  const joinRoom = async () => {
+    if (onlineBusy || roomCode.length !== 6) {
+      if (roomCode.length !== 6) setLobbyNotice("방 코드 6자리를 입력하세요");
+      return;
+    }
+    setOnlineBusy(true);
+    try {
+      const stored = window.localStorage.getItem(`seoul999m-room-${roomCode}`);
+      let reconnectToken: string | undefined;
+      if (stored) try {
+        const saved = JSON.parse(stored) as RoomClientIdentity & { nickname?: string };
+        reconnectToken = saved.nickname === nickname ? saved.token : undefined;
+      } catch { reconnectToken = undefined; }
+      const result = await joinOnlineRoom(roomCode, {
+        nickname, heroId: roomHero.id, faction: roomHero.faction, token: reconnectToken,
+      });
+      setOnlineRoom(result.room);
+      setOnlineIdentity(result.identity);
+      window.localStorage.setItem(`seoul999m-room-${result.room.code}`, JSON.stringify({ ...result.identity, nickname }));
+      setLobbyNotice(`방 ${result.room.code} 참가 완료`);
+      onlineStartedRef.current = false;
+    } catch (error) {
+      setLobbyNotice(error instanceof Error ? error.message : "방 참가 실패");
+    } finally { setOnlineBusy(false); }
+  };
+  const roomAction = async (action: "ready" | "unready" | "start" | "leave" | "rematch") => {
+    if (!onlineRoom || !onlineIdentity || onlineBusy) return;
+    setOnlineBusy(true);
+    try {
+      const result = await updateOnlineRoom(onlineRoom.code, onlineIdentity, action);
+      setOnlineRoom(result.room);
+      if (action === "rematch") {
+        onlineStartedRef.current = false;
+        onlineSnapshotRef.current = null;
+        lastOnlineSnapshotRef.current = 0;
+        setLobbyNotice("재대전 준비 · 전 대원이 다시 준비해야 합니다.");
+      }
+      if (action === "leave") {
+        window.localStorage.removeItem(`seoul999m-room-${onlineRoom.code}`);
+        setOnlineRoom(null);
+        setOnlineIdentity(null);
+        setLobbyNotice("방에서 나왔습니다.");
+      }
+    } catch (error) {
+      setLobbyNotice(error instanceof Error ? error.message : "방 명령 실패");
+    } finally { setOnlineBusy(false); }
+  };
+  const publishOnlineInput = (input: Omit<OnlineBattleCommand, "sequence" | "playerId" | "issuedAt">) => {
+    if (!onlineRoom || !onlineIdentity || onlineRoom.status !== "playing") return;
+    void sendOnlineBattleCommand(onlineRoom.code, onlineIdentity, input).catch((error) =>
+      setLobbyNotice(error instanceof Error ? error.message : "전투 명령 전송 실패"),
+    );
+  };
+  useEffect(() => {
+    if (!onlineRoom || !onlineIdentity) return;
+    const poll = window.setInterval(async () => {
+      try {
+        const result = await readOnlineRoom(onlineRoom.code, onlineIdentity);
+        const unseen = result.room.commands.filter(
+          (command) => command.sequence > lastOnlineCommandRef.current && command.playerId !== onlineIdentity.playerId,
+        );
+        if (unseen.length) onlineCommandInboxRef.current.push(...unseen);
+        lastOnlineCommandRef.current = Math.max(lastOnlineCommandRef.current, result.room.commandSequence);
+        onlineAiPlayersRef.current = new Set(
+          result.room.players.filter((player) => player.aiControlled).map((player) => player.id),
+        );
+        if (result.room.snapshot && result.room.snapshot.sequence > lastOnlineSnapshotRef.current) {
+          onlineSnapshotRef.current = result.room.snapshot;
+          lastOnlineSnapshotRef.current = result.room.snapshot.sequence;
+        }
+        setOnlineRoom(result.room);
+      } catch (error) {
+        setLobbyNotice(error instanceof Error ? error.message : "방 동기화 중단");
+      }
+    }, 750);
+    return () => window.clearInterval(poll);
+  }, [onlineRoom?.code, onlineIdentity?.playerId, onlineIdentity?.token]);
+  useEffect(() => {
+    if (!onlineRoom || !onlineIdentity || onlineRoom.status !== "playing" || onlineStartedRef.current) return;
+    const local = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId);
+    if (!local) return;
+    const config = createOnlineMatch({
+      teamSize: onlineRoom.teamSize, mapId: onlineRoom.mapId, seed: onlineRoom.seed,
+      localPlayerId: local.id, players: onlineRoom.players,
+    });
+    onlineStartedRef.current = true;
+    lastOnlineCommandRef.current = onlineRoom.commandSequence;
+    onlineCommandInboxRef.current = [];
+    onlineSnapshotRef.current = null;
+    lastOnlineSnapshotRef.current = onlineRoom.snapshot?.sequence ?? 0;
+    setActiveMatchConfig(config);
+    setSelectedHeroId(local.heroId);
+    setGameMode("skirmish");
+    setOutcome(null);
+    setMessage(`온라인 방 ${onlineRoom.code} · ${local.nickname} 투입`);
+    setScreen("play");
+  }, [onlineRoom?.status, onlineIdentity?.playerId]);
+  useEffect(() => {
+    if (!outcome || !onlineRoom || !onlineIdentity || onlineRoom.status !== "playing" || onlineRoom.hostId !== onlineIdentity.playerId) return;
+    const local = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId);
+    if (!local) return;
+    const winner = outcome === "win" ? local.team : local.team === "blue" ? "red" : "blue";
+    void updateOnlineRoom(onlineRoom.code, onlineIdentity, "finish", { winner }).then((result) => setOnlineRoom(result.room)).catch((error) =>
+      setLobbyNotice(error instanceof Error ? error.message : "전투 결과 확정 실패"),
+    );
+  }, [outcome, onlineRoom?.status, onlineIdentity?.playerId]);
+  useEffect(() => {
+    if (outcome || screen !== "play" || onlineRoom?.status !== "finished" || !onlineRoom.winner || !onlineIdentity) return;
+    const local = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId);
+    if (local) setOutcome(local.team === onlineRoom.winner ? "win" : "lose");
+  }, [onlineRoom?.status, onlineRoom?.winner, onlineIdentity?.playerId, outcome, screen]);
+  const returnToOnlineRoom = () => {
+    pausedRef.current = false;
+    onlineStartedRef.current = false;
+    setPaused(false);
+    setOutcome(null);
+    setActiveMatchConfig(null);
+    setMenuPanel("together");
+    setScreen("intro");
   };
   const startCampaignMission = () => {
     setGameMode("campaign1");
@@ -525,6 +683,8 @@ export default function Seoul999mBelow() {
     let raf = 0,
       last = performance.now(),
       lastHud = 0,
+      onlineSnapshotClock = 0,
+      appliedOnlineSnapshot = 0,
       lastMarchReservationFrame = -1,
       unitId = 1,
       buildId = 1,
@@ -534,7 +694,10 @@ export default function Seoul999mBelow() {
       enemyShield = 180,
       money = 120,
       wave = 0,
-      spawnClock = 1600,
+      spawnClock =
+        activeMatchConfig?.kind === "online" && onlineRoom?.countdownAt
+          ? Math.max(0, 1600 - Math.max(0, Date.now() - onlineRoom.countdownAt))
+          : 1600,
       passiveClock = 0,
       steamDamageClock = 0,
       heroXp = 0,
@@ -569,7 +732,7 @@ export default function Seoul999mBelow() {
       routeEdit: RouteId | null = null,
       pointerHeld = false,
       cursorScreen = { x: VW / 2, y: VH / 2 },
-      moveTarget: { x: number; y: number; wx: number; wy: number } | null =
+        moveTarget: { x: number; y: number; wx: number; wy: number } | null =
         null,
       attackTarget: {
         kind: "unit" | "turret" | "base";
@@ -577,14 +740,21 @@ export default function Seoul999mBelow() {
         x: number;
         y: number;
       } | null = null;
-    const selectedBattleMap = battleMap(activeMatchConfig?.mapId ?? selectedMapId),
+    let deterministicSeed = (activeMatchConfig?.seed ?? (campaignChapter * 0x9e3779b9)) >>> 0;
+    const random = () => {
+        deterministicSeed = (deterministicSeed + 0x6d2b79f5) | 0;
+        let mixed = Math.imul(deterministicSeed ^ (deterministicSeed >>> 15), 1 | deterministicSeed);
+        mixed = (mixed + Math.imul(mixed ^ (mixed >>> 7), 61 | mixed)) ^ mixed;
+        return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
+      },
+      selectedBattleMap = battleMap(activeMatchConfig?.mapId ?? selectedMapId),
       kit = heroKit(playerDef.id),
       enemyChoices = (Object.keys(FACTIONS) as FactionId[]).filter(
         (id) => id !== playerDef.faction,
       ),
       enemyFaction: FactionId = isCampaign
         ? "bugborn"
-        : activeMatchConfig?.teams[1].faction ?? enemyChoices[Math.floor(Math.random() * enemyChoices.length)],
+        : activeMatchConfig?.teams[1].faction ?? enemyChoices[Math.floor(random() * enemyChoices.length)],
       talents = new Set<string>(),
       keys = new Set<string>(),
       shots: Shot[] = [],
@@ -975,6 +1145,7 @@ export default function Seoul999mBelow() {
         act: isCampaign && campaignChapter === 3 ? 5200 : 0,
         attack: heroBaseAttack,
         armor: playerDef.stats.armor,
+        onlinePlayerId: activeMatchConfig?.kind === "online" ? activeMatchConfig.teams[0].slots[0]?.id : undefined,
       }),
       enemyHero: Unit = createHeroUnit({
         id: unitId++,
@@ -985,14 +1156,20 @@ export default function Seoul999mBelow() {
         hp: 190,
         attack: 38,
         armor: enemyFaction === "ai" ? 22 : 18,
+        onlinePlayerId: activeMatchConfig?.kind === "online" ? activeMatchConfig.teams[1].slots[0]?.id : undefined,
+        networkController: activeMatchConfig?.kind === "online" ? activeMatchConfig.teams[1].slots[0]?.controller === "ai" ? "ai" : "remote" : "ai",
       }),
       allySlot = !isCampaign ? activeMatchConfig?.teams[0].slots[1] : undefined,
       enemySecondSlot = !isCampaign ? activeMatchConfig?.teams[1].slots[1] : undefined,
       allyHero = allySlot ? createHeroUnit({
         id: unitId++, heroId: allySlot.heroId, x: ALLY.x + 1, y: ALLY.y + 2, team: "blue",
+        onlinePlayerId: activeMatchConfig?.kind === "online" ? allySlot.id : undefined,
+        networkController: activeMatchConfig?.kind === "online" ? allySlot.controller === "ai" ? "ai" : "remote" : "ai",
       }) : null,
       enemySecondHero = enemySecondSlot ? createHeroUnit({
         id: unitId++, heroId: enemySecondSlot.heroId, x: ENEMY.x - 1, y: ENEMY.y + 2, team: "red",
+        onlinePlayerId: activeMatchConfig?.kind === "online" ? enemySecondSlot.id : undefined,
+        networkController: activeMatchConfig?.kind === "online" ? enemySecondSlot.controller === "ai" ? "ai" : "remote" : "ai",
       }) : null,
       battleAiHeroes = [allyHero, enemyHero, enemySecondHero].filter((unit): unit is Unit => Boolean(unit));
     const playerStarter = factionBuildables(playerDef.faction).find(
@@ -1119,9 +1296,9 @@ export default function Seoul999mBelow() {
     const burst = (x: number, y: number, color: string, n = 8) => {
         for (let i = 0; i < n; i++)
           dust.push({
-            x: x * S + S / 2 + (Math.random() - 0.5) * S,
-            y: y * S + S / 2 + (Math.random() - 0.5) * S,
-            life: 240 + Math.random() * 330,
+            x: x * S + S / 2 + (random() - 0.5) * S,
+            y: y * S + S / 2 + (random() - 0.5) * S,
+            life: 240 + random() * 330,
             color,
           });
       },
@@ -1139,8 +1316,6 @@ export default function Seoul999mBelow() {
         !!grid[y]?.[x] && WALKABLE_TERRAIN.has(grid[y][x].type),
       terrainMoveFactor = (x: number, y: number) =>
         grid[y]?.[x]?.surface === "shallowWater" ? 0.58 : 1,
-      projectileOpen = (x: number, y: number) =>
-        !!grid[y]?.[x] && PROJECTILE_TERRAIN.has(grid[y][x].type),
       resolveUnitOverlaps = () => {
         const claimed = new Set<string>(),
           actors = units
@@ -1258,7 +1433,7 @@ export default function Seoul999mBelow() {
         let crit = false;
         if (canCrit && chance > 0) {
           critMeter[team] = Math.min(0.8, critMeter[team] + chance);
-          if (Math.random() < critMeter[team]) {
+          if (random() < critMeter[team]) {
             crit = true;
             critMeter[team] = 0;
           } else
@@ -1689,14 +1864,6 @@ export default function Seoul999mBelow() {
           }
         }
         return reach;
-      },
-      rayMetric = (px: number, py: number, d: { x: number; y: number }) => {
-        const rx = px - heroWorld.x,
-          ry = py - heroWorld.y;
-        return {
-          along: rx * d.x + ry * d.y,
-          side: Math.abs(rx * d.y - ry * d.x),
-        };
       };
     const melee = (
       u: Unit,
@@ -2741,7 +2908,7 @@ export default function Seoul999mBelow() {
                 )
               ? "방어"
               : "회피",
-      useSurvival = () => {
+      activateSurvival = () => {
         if (!hero.alive || survivalCd > 0) return;
         const type = survivalType(),
           now = performance.now(),
@@ -2940,7 +3107,7 @@ export default function Seoul999mBelow() {
         tone("coin");
         setMessage(`${def.name} 구매 · ${slot === 0 ? "Q" : "R"} 슬롯 장착`);
       },
-      useItem = (slot: number) => {
+      activateItem = (slot: number) => {
         if (!hero.alive) return;
         const item = itemSlots[slot];
         if (!item) {
@@ -4083,61 +4250,274 @@ export default function Seoul999mBelow() {
         ctx.restore();
       }
     };
-    const stepBattleHero = (aiHero: Unit) => {
-      if (!aiHero.alive || aiHero.act > 0) return;
-      const ownCore = aiHero.team === "blue" ? ALLY : ENEMY,
-        opposingCore = aiHero.team === "blue" ? ENEMY : ALLY;
-      const threatened = units.some(
-        (u) =>
-          u.alive &&
-          u.team !== aiHero.team &&
-          Math.hypot(u.x - ownCore.x, u.y - ownCore.y) < 9,
-      );
-      let goal = opposingCore;
-      if (aiHero.hp < aiHero.maxHp * 0.32 || threatened) goal = ownCore;
-      const close = nearestEnemy(aiHero, 1);
-      if (close) {
-        melee(
-          aiHero,
-          { x: close.x - aiHero.x, y: close.y - aiHero.y },
-          4,
+    const heroBrainRole = (unit: Unit): HeroBrainRole => {
+        const role = HEROES.find((definition) => definition.id === unit.heroId)?.role ?? "";
+        if (/지원|수리/.test(role)) return "support";
+        if (/탱커|중장갑/.test(role)) return "tank";
+        if (/원거리|지속|제어/.test(role)) return "artillery";
+        if (/고속|정찰|스피드/.test(role)) return "skirmisher";
+        return "assault";
+      },
+      setBattleHeroAction = (unit: Unit, slot: 0 | 1 | 2 | 3 | 4, duration: number) => {
+        unit.arenaActionSlot = slot;
+        unit.arenaActionStartedAt = performance.now();
+        unit.arenaActionDuration = duration;
+        unit.arenaActionUntil = performance.now() + duration;
+        unit.act = duration;
+      },
+      battleHeroTargets = (attacker: Unit, radius: number) =>
+        units.filter(
+          (target) =>
+            target.alive &&
+            target.team !== attacker.team &&
+            Math.hypot(target.x - attacker.x, target.y - attacker.y) <= radius,
+        ),
+      damageFromBattleHero = (attacker: Unit, target: Unit, multiplier: number, stun = 0) => {
+        const dealt = hurt(
+          target,
+          attacker.attack * Math.max(0.35, multiplier),
+          attacker.team,
+          true,
+          attacker.critChance,
+          attacker.critMultiplier,
         );
-        return;
-      }
-      const ranged = nearestEnemy(aiHero, 8);
-      if (
-        ranged &&
-        aiHero.shot <= 0 &&
-        clearRay(aiHero.x, aiHero.y, ranged.x, ranged.y)
-      ) {
-        aiHero.dir = cardinal(
-          ranged.x - aiHero.x,
-          ranged.y - aiHero.y,
-        );
-        fire(aiHero, ranged.x - aiHero.x, ranged.y - aiHero.y);
-        aiHero.act = 520;
-        return;
-      }
-      if (
-        goal === ownCore &&
-        Math.abs(aiHero.x - ownCore.x) + Math.abs(aiHero.y - ownCore.y) <= 2
-      ) {
-        aiHero.hp = Math.min(aiHero.maxHp, aiHero.hp + 3);
-        aiHero.act = 500;
-        return;
-      }
-      const dx = goal.x - aiHero.x,
-        dy = goal.y - aiHero.y,
-        primary = cardinal(dx, dy),
-        alternate = primary.x
-          ? { x: 0, y: Math.sign(dy) || (Math.random() < 0.5 ? 1 : -1) }
-          : { x: Math.sign(dx) || (Math.random() < 0.5 ? 1 : -1), y: 0 },
-        p = grid[aiHero.y + primary.y]?.[aiHero.x + primary.x],
-        a = grid[aiHero.y + alternate.y]?.[aiHero.x + alternate.x],
-        choice = p && a && a.type !== 4 && a.hp < p.hp ? alternate : primary;
-      moveOrDig(aiHero, choice.x, choice.y);
-      aiHero.act = (260 + Math.random() * 130) / terrainMoveFactor(aiHero.x, aiHero.y);
-    };
+        if (dealt > 0 && stun) target.act = Math.max(target.act, stun);
+        if (dealt > 0 && attacker.heroId === "cheolgak")
+          attacker.hp = Math.min(attacker.maxHp, attacker.hp + dealt * 0.16);
+        if (dealt > 0 && attacker.heroId === "r486")
+          attacker.hp = Math.min(attacker.maxHp, attacker.hp + dealt * 0.1);
+        return dealt;
+      },
+      battleHeroFx = (attacker: Unit, target: Unit | null, variant: string, radius: number, duration: number) => {
+        const definition = heroKit(attacker.heroId ?? "yoo-seungcheon"),
+          direction = target
+            ? unitVector(target.x - attacker.x, target.y - attacker.y)
+            : attacker.dir;
+        attacker.dir = direction;
+        slashes.push({
+          x: attacker.x,
+          y: attacker.y,
+          dir: { ...direction },
+          life: duration,
+          maxLife: duration,
+          kind: "signature",
+          variant,
+          color: definition.color,
+          radius,
+        });
+      },
+      executeBattleHeroSkill = (attacker: Unit, target: Unit, slot: 1 | 2 | 4) => {
+        const now = performance.now(), action = heroAction(attacker.heroId ?? "yoo-seungcheon", slot),
+          mode = action.mode,
+          radius = Math.max(1.2, action.radius || action.range * 0.34),
+          duration = slot === 4 ? 960 : 720,
+          areaModes = new Set([
+            "spin", "shieldSweep", "biteCone", "blindDust", "batonSweep",
+            "acidCone", "lidDisc", "frenzy", "lockdown", "massRepair",
+          ]),
+          stunModes = new Set(["stunSpray", "smash", "microwave", "batonSweep", "lockdown"]),
+          pushModes = new Set(["shieldSweep", "shellRush", "lidDisc", "moltRam", "trackShift", "overclock"]),
+          supportModes = new Set(["groupHeal", "armorOrder", "nightPatrol", "weldCone", "massRepair"]);
+        if (supportModes.has(mode)) {
+          const allies = units.filter(
+            (unit) => unit.alive && unit.team === attacker.team && Math.hypot(unit.x - attacker.x, unit.y - attacker.y) <= Math.max(3.5, action.range),
+          );
+          if (mode === "groupHeal" || mode === "weldCone" || mode === "massRepair")
+            for (const ally of allies)
+              ally.hp = Math.min(ally.maxHp, ally.hp + ally.maxHp * (slot === 4 ? 0.24 : 0.14));
+          if (mode === "armorOrder" || mode === "nightPatrol")
+            for (const ally of allies) ally.armor += 4;
+          if (mode === "massRepair")
+            for (const enemy of battleHeroTargets(attacker, radius)) damageFromBattleHero(attacker, enemy, action.damage, 220);
+        } else if (areaModes.has(mode)) {
+          const targets = battleHeroTargets(attacker, radius);
+          for (const enemy of targets)
+            damageFromBattleHero(attacker, enemy, action.damage, stunModes.has(mode) ? 650 : 0);
+        } else {
+          damageFromBattleHero(attacker, target, action.damage, stunModes.has(mode) ? 720 : 0);
+          if (["acidMark", "acidShot"].includes(mode)) target.vulnerableUntil = now + 5200;
+          if (["webTrap", "silkPull", "webLock"].includes(mode)) target.act = Math.max(target.act, 950);
+          if (pushModes.has(mode)) {
+            const direction = cardinal(target.x - attacker.x, target.y - attacker.y),
+              nx = target.x + direction.x,
+              ny = target.y + direction.y;
+            if (open(nx, ny) && !occupied(nx, ny, target) && !turretAt(nx, ny) && !baseAt(nx, ny)) {
+              target.x = nx;
+              target.y = ny;
+            }
+          }
+        }
+        battleHeroFx(attacker, target, mode, radius, duration);
+        setBattleHeroAction(attacker, slot, duration);
+        const cooldowns = attacker.aiCooldowns ?? [0, 0, 0, 0];
+        cooldowns[slot === 1 ? 0 : slot === 2 ? 1 : 3] = now + action.cooldown;
+        attacker.aiCooldowns = cooldowns;
+        attacker.aiPreviousAction = slot === 1 ? "skill1" : slot === 2 ? "skill2" : "ultimate";
+        const definition = HEROES.find((heroDefinition) => heroDefinition.id === attacker.heroId);
+        if (definition) setMessage(`${attacker.name} · ${definition.skills[slot === 4 ? 3 : slot - 1]}`);
+      },
+      executeBattleHeroDrill = (attacker: Unit, goal: { x: number; y: number }) => {
+        const now = performance.now(), action = heroAction(attacker.heroId ?? "yoo-seungcheon", 3),
+          direction = cardinal(goal.x - attacker.x, goal.y - attacker.y),
+          kitDefinition = heroKit(attacker.heroId ?? "yoo-seungcheon"),
+          length = Math.max(3, kitDefinition.drill.length);
+        for (let distance = 1; distance <= length; distance++)
+          breakTile(attacker, attacker.x + direction.x * distance, attacker.y + direction.y * distance, attacker.faction === "ai" ? 3 : 2);
+        battleHeroFx(attacker, null, action.mode, 2, 820);
+        setBattleHeroAction(attacker, 3, 820);
+        const cooldowns = attacker.aiCooldowns ?? [0, 0, 0, 0];
+        cooldowns[2] = now + action.cooldown;
+        attacker.aiCooldowns = cooldowns;
+        attacker.aiPreviousAction = "drill";
+      },
+      transformOnlinePoint = (unit: Unit, x: number, y: number) =>
+        unit.team === "red" ? { x: COLS - 1 - x, y: ROWS - 1 - y } : { x, y },
+      processOnlineBattleCommands = () => {
+        while (onlineCommandInboxRef.current.length) {
+          const command = onlineCommandInboxRef.current.shift()!,
+            unit = battleAiHeroes.find((candidate) => candidate.onlinePlayerId === command.playerId);
+          if (!unit || !unit.alive) continue;
+          const target = nearestEnemy(unit, 9);
+          if (command.type === "move" && command.x !== undefined && command.y !== undefined) {
+            unit.remoteGoal = transformOnlinePoint(unit, command.x, command.y);
+          } else if (command.type === "attack" && target) {
+            const range = HEROES.find((definition) => definition.id === unit.heroId)?.stats.range ?? 1.2;
+            unit.dir = cardinal(target.x - unit.x, target.y - unit.y);
+            if (range > 2) fire(unit, target.x - unit.x, target.y - unit.y, "arrow", unit.attack);
+            else melee(unit, { x: target.x - unit.x, y: target.y - unit.y }, 4);
+            setBattleHeroAction(unit, 0, Math.max(380, unit.attackInterval * 720));
+          } else if (command.type === "skill" && command.slot && target) {
+            const ready = unit.aiCooldowns ?? [0, 0, 0, 0], index = command.slot === 1 ? 0 : command.slot === 2 ? 1 : 3;
+            if (ready[index] <= performance.now()) executeBattleHeroSkill(unit, target, command.slot);
+          } else if (command.type === "drill") executeBattleHeroDrill(unit, unit.remoteGoal ?? (unit.team === "blue" ? ENEMY : ALLY));
+        }
+      },
+      syncOnlineBattleState = (dt: number) => {
+        if (activeMatchConfig?.kind !== "online" || !onlineRoom || !onlineIdentity) return;
+        const localRoomPlayer = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId),
+          isHost = onlineRoom.hostId === onlineIdentity.playerId;
+        if (!localRoomPlayer) return;
+        if (!isHost) {
+          const snapshot = onlineSnapshotRef.current;
+          if (!snapshot || snapshot.sequence <= appliedOnlineSnapshot) return;
+          appliedOnlineSnapshot = snapshot.sequence;
+          const mirrored = localRoomPlayer.team === "red";
+          allyHp = mirrored ? snapshot.enemyCore.hp : snapshot.allyCore.hp;
+          allyShield = mirrored ? snapshot.enemyCore.shield : snapshot.allyCore.shield;
+          enemyHp = mirrored ? snapshot.allyCore.hp : snapshot.enemyCore.hp;
+          enemyShield = mirrored ? snapshot.allyCore.shield : snapshot.enemyCore.shield;
+          for (const state of snapshot.heroes) {
+            const unit = units.find((candidate) => candidate.onlinePlayerId === state.playerId);
+            if (!unit) continue;
+            unit.x = mirrored ? COLS - 1 - state.x : state.x;
+            unit.y = mirrored ? ROWS - 1 - state.y : state.y;
+            unit.hp = state.hp;
+            unit.maxHp = state.maxHp;
+            unit.alive = state.alive;
+            unit.dir = mirrored ? { x: -state.dir.x, y: -state.dir.y } : state.dir;
+            if (unit === hero) {
+              heroWorld.x = unit.x * S + S / 2;
+              heroWorld.y = unit.y * S + S / 2;
+            }
+          }
+          return;
+        }
+        onlineSnapshotClock -= dt;
+        if (onlineSnapshotClock > 0) return;
+        onlineSnapshotClock = 500;
+        void sendOnlineBattleSnapshot(onlineRoom.code, onlineIdentity, {
+          allyCore: { hp: allyHp, shield: allyShield },
+          enemyCore: { hp: enemyHp, shield: enemyShield },
+          heroes: units.filter((unit) => unit.role === "hero" && unit.onlinePlayerId).map((unit) => ({
+            playerId: unit.onlinePlayerId!, x: unit.x, y: unit.y, hp: unit.hp, maxHp: unit.maxHp,
+            alive: unit.alive, dir: unit.dir,
+          })),
+        }).catch(() => undefined);
+      },
+      stepBattleHero = (aiHero: Unit) => {
+        if (!aiHero.alive || aiHero.act > 0) return;
+        if (
+          activeMatchConfig?.kind === "online" &&
+          aiHero.networkController === "remote" &&
+          aiHero.onlinePlayerId &&
+          !onlineAiPlayersRef.current.has(aiHero.onlinePlayerId)
+        ) {
+          if (aiHero.remoteGoal) {
+            if (Math.abs(aiHero.x - aiHero.remoteGoal.x) + Math.abs(aiHero.y - aiHero.remoteGoal.y) <= 1)
+              aiHero.remoteGoal = undefined;
+            else {
+              const remoteStep = nextPath(aiHero, aiHero.remoteGoal) ?? cardinal(aiHero.remoteGoal.x - aiHero.x, aiHero.remoteGoal.y - aiHero.y);
+              moveOrDig(aiHero, remoteStep.x, remoteStep.y);
+              aiHero.act = 260 / terrainMoveFactor(aiHero.x, aiHero.y);
+            }
+          } else aiHero.act = 120;
+          return;
+        }
+        const now = performance.now(), definition = HEROES.find((candidate) => candidate.id === aiHero.heroId),
+          ownCore = aiHero.team === "blue" ? ALLY : ENEMY,
+          opposingCore = aiHero.team === "blue" ? ENEMY : ALLY,
+          allies = units.filter((unit) => unit.alive && unit.team === aiHero.team && unit !== aiHero),
+          enemies = units.filter((unit) => unit.alive && unit.team !== aiHero.team),
+          target = enemies
+            .map((unit) => ({
+              unit,
+              score:
+                Math.hypot(unit.x - aiHero.x, unit.y - aiHero.y) * 3 +
+                unit.hp / unit.maxHp * 2 -
+                (unit.role === "hero" ? 2.4 : 0) -
+                (Math.hypot(unit.x - ownCore.x, unit.y - ownCore.y) < 8 ? 5 : 0),
+            }))
+            .sort((a, b) => a.score - b.score)[0]?.unit,
+          targetDistance = target ? Math.hypot(target.x - aiHero.x, target.y - aiHero.y) : 99,
+          basicRange = Math.max(1.25, definition?.stats.range ?? 1.25),
+          coreDanger = Math.min(1, enemies.filter((unit) => Math.hypot(unit.x - ownCore.x, unit.y - ownCore.y) < 9).length / 4),
+          routeStep = cardinal(opposingCore.x - aiHero.x, opposingCore.y - aiHero.y),
+          routeBlocked = !open(aiHero.x + routeStep.x, aiHero.y + routeStep.y),
+          cooldowns = aiHero.aiCooldowns ?? [0, 0, 0, 0],
+          decision = decideHeroAction({
+            hpRatio: aiHero.hp / aiHero.maxHp,
+            allyHpRatio: allies.length ? Math.min(...allies.map((unit) => unit.hp / unit.maxHp)) : 1,
+            coreDanger,
+            targetDistance,
+            enemiesInBasic: target && targetDistance <= basicRange ? 1 : 0,
+            enemiesInArea: enemies.filter((unit) => Math.hypot(unit.x - aiHero.x, unit.y - aiHero.y) <= 3).length,
+            targetHpRatio: target ? target.hp / target.maxHp : 1,
+            routeBlocked,
+            allyNearby: allies.some((unit) => Math.hypot(unit.x - aiHero.x, unit.y - aiHero.y) <= 4),
+            cooldowns: cooldowns.map((readyAt) => readyAt - now) as [number, number, number, number],
+            role: heroBrainRole(aiHero),
+            previousAction: aiHero.aiPreviousAction as Parameters<typeof decideHeroAction>[0]["previousAction"],
+          });
+        aiHero.aiDecisionReason = decision.reason;
+        aiHero.aiTargetId = target?.id;
+        if (target && decision.action === "ultimate" && cooldowns[3] <= now) return executeBattleHeroSkill(aiHero, target, 4);
+        if (target && decision.action === "skill2" && cooldowns[1] <= now) return executeBattleHeroSkill(aiHero, target, 2);
+        if (target && decision.action === "skill1" && cooldowns[0] <= now) return executeBattleHeroSkill(aiHero, target, 1);
+        if (decision.action === "drill" && cooldowns[2] <= now) return executeBattleHeroDrill(aiHero, opposingCore);
+        if (target && targetDistance <= basicRange && clearRay(aiHero.x, aiHero.y, target.x, target.y)) {
+          aiHero.dir = cardinal(target.x - aiHero.x, target.y - aiHero.y);
+          if (basicRange > 2) fire(aiHero, target.x - aiHero.x, target.y - aiHero.y, "arrow", aiHero.attack);
+          else melee(aiHero, { x: target.x - aiHero.x, y: target.y - aiHero.y }, 4);
+          setBattleHeroAction(aiHero, 0, Math.max(380, aiHero.attackInterval * 720));
+          aiHero.aiPreviousAction = "attack";
+          return;
+        }
+        const retreating = decision.action === "retreat" || decision.action === "regroup",
+          goal = retreating ? ownCore : target && targetDistance < 9 ? target : opposingCore;
+        if (retreating && Math.hypot(aiHero.x - ownCore.x, aiHero.y - ownCore.y) <= 2.5) {
+          aiHero.hp = Math.min(aiHero.maxHp, aiHero.hp + aiHero.maxHp * 0.025);
+          aiHero.act = 480;
+          return;
+        }
+        const step = nextPath(aiHero, goal) ?? cardinal(goal.x - aiHero.x, goal.y - aiHero.y);
+        if (grid[aiHero.y]?.[aiHero.x]?.hazard === "steam" && selectedBattleMap.hazard === "steam") {
+          const safe = DIRS.find((direction) => open(aiHero.x + direction.x, aiHero.y + direction.y) && grid[aiHero.y + direction.y]?.[aiHero.x + direction.x]?.hazard !== "steam");
+          if (safe) moveOrDig(aiHero, safe.x, safe.y);
+          else moveOrDig(aiHero, step.x, step.y);
+        } else moveOrDig(aiHero, step.x, step.y);
+        aiHero.aiPreviousAction = decision.action;
+        aiHero.act = (240 + (aiHero.id % 4) * 24) / terrainMoveFactor(aiHero.x, aiHero.y);
+      };
     const arenaFighters = () =>
         units.filter(
           (unit) =>
@@ -4165,6 +4545,8 @@ export default function Seoul999mBelow() {
         _radius = 1.2,
         _duration = 620,
       ) => {
+        void _radius;
+        void _duration;
         const d = unitVector(target.x - fighter.x, target.y - fighter.y);
         fighter.dir = d;
       },
@@ -4228,7 +4610,7 @@ export default function Seoul999mBelow() {
         if (current && now < (fighter.arenaTargetUntil ?? 0)) return current;
         const playerTarget = candidates.find((unit) => unit === hero),
           otherFighters = candidates.filter((unit) => unit !== hero),
-          targetPool = playerTarget && (!otherFighters.length || Math.random() < 0.7)
+          targetPool = playerTarget && (!otherFighters.length || random() < 0.7)
             ? [playerTarget]
             : otherFighters.length ? otherFighters : candidates,
           id = fighter.campaignHeroId ?? "yoo-seungcheon",
@@ -4241,12 +4623,12 @@ export default function Seoul999mBelow() {
               arenaFighters().filter((other) => other !== fighter && other.arenaTargetId === unit.id).length * 1.15 +
               (unit.id === fighter.arenaLastAttackerId && now < (fighter.arenaThreatUntil ?? 0) ? -2.4 : 0) +
               (unit.hp / unit.maxHp < 0.28 ? -1.6 : 0) +
-              Math.random() * 2.2,
+              random() * 2.2,
           }))
           .sort((a, b) => a.score - b.score);
-        const pool = ranked.slice(0, Math.min(2, ranked.length)), chosen = pool[Math.floor(Math.random() * pool.length)].unit;
+        const pool = ranked.slice(0, Math.min(2, ranked.length)), chosen = pool[Math.floor(random() * pool.length)].unit;
         fighter.arenaTargetId = chosen.id;
-        fighter.arenaTargetUntil = now + 1300 + Math.random() * 900;
+        fighter.arenaTargetUntil = now + 1300 + random() * 900;
         return chosen;
       },
       arenaBasicAttack = (fighter: Unit, target: Unit) => {
@@ -4263,7 +4645,7 @@ export default function Seoul999mBelow() {
       },
       arenaUseSkill = (fighter: Unit, target: Unit, ultimate: boolean, preferredSlot?: 1 | 2) => {
         const now = performance.now(), id = fighter.heroId ?? fighter.campaignHeroId ?? "yoo-seungcheon",
-          def = HEROES.find((heroDef) => heroDef.id === id), slot: 1 | 2 | 4 = ultimate ? 4 : preferredSlot ?? (Math.random() < 0.5 ? 1 : 2),
+          def = HEROES.find((heroDef) => heroDef.id === id), slot: 1 | 2 | 4 = ultimate ? 4 : preferredSlot ?? (random() < 0.5 ? 1 : 2),
           action = heroAction(id, slot),
           radius = Math.max(1.2, action.radius || action.range * 0.35),
           duration = ultimate ? 920 : 760;
@@ -4283,8 +4665,8 @@ export default function Seoul999mBelow() {
         }
         arenaFx(fighter, target, action.mode, radius, duration);
         setArenaAction(fighter, slot, duration);
-        if (ultimate) fighter.arenaUltimateReadyAt = now + 7200 + Math.random() * 1800;
-        else fighter.arenaSkillReadyAt = now + 3200 + Math.random() * 1200;
+        if (ultimate) fighter.arenaUltimateReadyAt = now + 7200 + random() * 1800;
+        else fighter.arenaSkillReadyAt = now + 3200 + random() * 1200;
         if (def) setMessage(`${fighter.name} · ${ultimate ? def.skills[3] : def.skills[slot - 1]}`);
       },
       stepArenaHero = (fighter: Unit) => {
@@ -4299,7 +4681,7 @@ export default function Seoul999mBelow() {
           nearby = arenaFighters().filter((unit) => unit !== fighter && Math.hypot(unit.x - fighter.x, unit.y - fighter.y) <= 2.2).length,
           targetTired = target.hp / target.maxHp < 0.46,
           ultimateOpportunity = targetTired || (id === "kang-ryeokhan" && metricDistance > 2.4) || (id === "ahn-seona" && metricDistance > 3.2);
-        if (combatDistance <= skillRange && now >= (fighter.arenaUltimateReadyAt ?? 0) && ultimateOpportunity && Math.random() < 0.84) {
+        if (combatDistance <= skillRange && now >= (fighter.arenaUltimateReadyAt ?? 0) && ultimateOpportunity && random() < 0.84) {
           arenaUseSkill(fighter, target, true);
           return;
         }
@@ -4326,7 +4708,7 @@ export default function Seoul999mBelow() {
             const nextDistance = Math.hypot(target.x - x, target.y - y),
               crowd = arenaFighters().filter((unit) => unit !== fighter && Math.hypot(unit.x - x, unit.y - y) <= 1.2).length,
               exits = DIRS.filter((exit) => open(x + exit.x, y + exit.y)).length;
-            return { d, score: Math.abs(nextDistance - desiredDistance) * 3.2 + crowd * 1.6 - exits * 0.35 + Math.random() * 0.8 };
+            return { d, score: Math.abs(nextDistance - desiredDistance) * 3.2 + crowd * 1.6 - exits * 0.35 + random() * 0.8 };
           }).filter(Boolean) as Array<{ d: { x: number; y: number }; score: number }>;
         movementChoices.sort((a, b) => a.score - b.score);
         let step = movementChoices[0]?.d ?? null;
@@ -4343,7 +4725,7 @@ export default function Seoul999mBelow() {
             heroMoveUntil = now + 320;
           }
         }
-        fighter.act = 300 + Math.random() * 90;
+        fighter.act = 300 + random() * 90;
       };
     const stepCampaignHero = (fighter: Unit) => {
       if (!fighter.alive || fighter.act > 0) return;
@@ -4366,7 +4748,7 @@ export default function Seoul999mBelow() {
         }
         const step = nextPath(fighter, { x: target.x, y: target.y });
         if (step) moveOrDig(fighter, step.x, step.y);
-        fighter.act = 250 + Math.random() * 100;
+        fighter.act = 250 + random() * 100;
         return;
       }
       if (fighter.campaignAi === "companion") {
@@ -4899,10 +5281,10 @@ export default function Seoul999mBelow() {
         else if (cmd === "build")
           selectBuildMode(factionBuildables(playerDef.faction)[0].id);
         else if (cmd === "fill") toggleFillMode();
-        else if (cmd === "survival") useSurvival();
+        else if (cmd === "survival") activateSurvival();
         else if (cmd.startsWith("buy:")) buyItem(cmd.slice(4) as ItemId);
-        else if (cmd === "item1") useItem(0);
-        else if (cmd === "item2") useItem(1);
+        else if (cmd === "item1") activateItem(0);
+        else if (cmd === "item2") activateItem(1);
       };
     const pointerPosition = (e: PointerEvent) => {
         const r = canvas.getBoundingClientRect(),
@@ -4964,10 +5346,23 @@ export default function Seoul999mBelow() {
         )
           return;
         keys.add(e.code);
-        if (e.code === "Digit1") processCommand("skill1");
+        if (e.code === "Digit1") {
+          processCommand("skill1");
+          publishOnlineInput({ type: "skill", slot: 1 });
+        }
         if (e.code === "Digit2") beginSkillAim(2);
         if (e.code === "Digit3") beginSkillAim(3);
-        if (e.code === "Digit4") processCommand("skill4");
+        if (e.code === "Digit4") {
+          processCommand("skill4");
+          publishOnlineInput({ type: "drill" });
+        }
+        const moveDirection =
+          e.code === "KeyW" || e.code === "ArrowUp" ? { x: 0, y: -1 } :
+          e.code === "KeyS" || e.code === "ArrowDown" ? { x: 0, y: 1 } :
+          e.code === "KeyA" || e.code === "ArrowLeft" ? { x: -1, y: 0 } :
+          e.code === "KeyD" || e.code === "ArrowRight" ? { x: 1, y: 0 } : null;
+        if (moveDirection)
+          publishOnlineInput({ type: "move", x: hero.x + moveDirection.x * 2, y: hero.y + moveDirection.y * 2 });
         if (e.code === "KeyB") processCommand("build");
         if (e.code === "KeyE") processCommand("fill");
         if (e.code === "ShiftLeft" || e.code === "ShiftRight")
@@ -4977,8 +5372,14 @@ export default function Seoul999mBelow() {
       },
       keyup = (e: KeyboardEvent) => {
         keys.delete(e.code);
-        if (e.code === "Digit2") releaseSkillAim(2);
-        if (e.code === "Digit3") releaseSkillAim(3);
+        if (e.code === "Digit2") {
+          releaseSkillAim(2);
+          publishOnlineInput({ type: "skill", slot: 2 });
+        }
+        if (e.code === "Digit3") {
+          releaseSkillAim(3);
+          publishOnlineInput({ type: "skill", slot: 4 });
+        }
       },
       pointerdown = (e: PointerEvent) => {
         if (pausedRef.current) return;
@@ -5048,9 +5449,11 @@ export default function Seoul999mBelow() {
             e.preventDefault();
             pointerHeld = false;
             basicAttackAtPointer();
+            publishOnlineInput({ type: "attack", x: cursorTile().x, y: cursorTile().y });
           } else {
             pointerHeld = true;
             issuePointerOrder();
+            publishOnlineInput({ type: "move", x: cursorTile().x, y: cursorTile().y });
           }
         }
       },
@@ -5283,7 +5686,11 @@ export default function Seoul999mBelow() {
           }
           scientist.act = 1000 / scientist.moveSpeed;
         }
-      if (!isCampaign) for (const aiHero of battleAiHeroes) stepBattleHero(aiHero);
+      if (!isCampaign) {
+        processOnlineBattleCommands();
+        syncOnlineBattleState(dt);
+        for (const aiHero of battleAiHeroes) stepBattleHero(aiHero);
+      }
       if (isCampaign && !(campaignChapter === 3 && campaignIntroClock < 5200))
         for (const fighter of units.filter((unit) => unit.campaignAi)) stepCampaignHero(fighter);
       for (const u of units) if (u.role === "minion" && !u.campaignScout) stepMinion(u);
@@ -7641,6 +8048,7 @@ export default function Seoul999mBelow() {
         e.stopImmediatePropagation();
         const tile = cursorTile();
         setRouteTarget(e.code === "Digit1" ? "A" : "B", tile.x, tile.y);
+        publishOnlineInput({ type: "route", route: e.code === "Digit1" ? "A" : "B", x: tile.x, y: tile.y });
       },
       followHeroPointer = (e: PointerEvent) => {
         if (e.button === 0 && !minimapPoint(cursorScreen.x, cursorScreen.y))
@@ -7837,62 +8245,84 @@ export default function Seoul999mBelow() {
                   <small>로그인 없이 임시 호출명으로 접속</small>
                 </span>
                 <button
-                  onClick={() => setMenuPanel("main")}
+                  onClick={() => onlineRoom ? roomAction("leave") : setMenuPanel("main")}
                   aria-label="뒤로 가기"
                 >
                   ×
                 </button>
               </div>
-              <label>
-                호출명
-                <input
-                  value={nickname}
-                  maxLength={12}
-                  onChange={(e) => setNickname(e.target.value)}
-                  placeholder="닉네임"
-                />
-              </label>
-              <div className="room-actions">
-                <button
-                  onClick={() => {
-                    const code = Math.random()
-                      .toString(36)
-                      .slice(2, 8)
-                      .toUpperCase();
-                    setRoomCode(code);
-                    setLobbyNotice(
-                      `방 코드 ${code} 준비됨 · 서버 연결은 다음 단계`,
-                    );
-                  }}
-                >
-                  방 만들기
-                </button>
-                <i>또는</i>
-                <label>
-                  방 코드
-                  <input
-                    value={roomCode}
-                    maxLength={6}
-                    onChange={(e) =>
-                      setRoomCode(
-                        e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""),
-                      )
-                    }
-                    placeholder="6자리"
-                  />
-                </label>
-                <button
-                  onClick={() =>
-                    setLobbyNotice(
-                      roomCode.length === 6
-                        ? "코드 확인 완료 · 서버 연결은 다음 단계"
-                        : "방 코드 6자리를 입력하세요",
-                    )
-                  }
-                >
-                  참가하기
-                </button>
-              </div>
+              {!onlineRoom ? (
+                <>
+                  <label>
+                    호출명
+                    <input value={nickname} maxLength={12} onChange={(e) => setNickname(e.target.value)} placeholder="닉네임" />
+                  </label>
+                  <div className="online-room-options">
+                    <fieldset>
+                      <legend>대전 인원</legend>
+                      <button className={skirmishTeamSize === 1 ? "active" : ""} onClick={() => setSkirmishTeamSize(1)}>1:1</button>
+                      <button className={skirmishTeamSize === 2 ? "active" : ""} onClick={() => setSkirmishTeamSize(2)}>2:2</button>
+                    </fieldset>
+                    <label>
+                      전장
+                      <select value={selectedMapId} onChange={(event) => setSelectedMapId(event.target.value as BattleMapId)}>
+                        {BATTLE_MAPS.map((map) => <option key={map.id} value={map.id}>{map.name}</option>)}
+                      </select>
+                    </label>
+                    <label>
+                      내 영웅
+                      <select value={selectedHeroId} onChange={(event) => setSelectedHeroId(event.target.value)}>
+                        {HEROES.map((candidate) => <option key={candidate.id} value={candidate.id}>{FACTIONS[candidate.faction].name} · {candidate.name}</option>)}
+                      </select>
+                    </label>
+                  </div>
+                  <div className="room-actions">
+                    <button disabled={onlineBusy} onClick={createRoom}>{onlineBusy ? "연결 중" : "방 만들기"}</button>
+                    <i>또는</i>
+                    <label>
+                      방 코드
+                      <input value={roomCode} maxLength={6} onChange={(e) => setRoomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))} placeholder="6자리" />
+                    </label>
+                    <button disabled={onlineBusy || roomCode.length !== 6} onClick={joinRoom}>참가하기</button>
+                  </div>
+                </>
+              ) : (
+                <div className="online-lobby">
+                  <div className="room-code-card">
+                    <span>ROOM CODE</span>
+                    <strong>{onlineRoom.code}</strong>
+                    <small>{onlineRoom.teamSize}:{onlineRoom.teamSize} · {battleMap(onlineRoom.mapId).name}</small>
+                  </div>
+                  <div className="online-slots">
+                    {(["blue", "red"] as const).map((team) => (
+                      <section key={team} className={team}>
+                        <h3>{team === "blue" ? "A TEAM" : "B TEAM"}</h3>
+                        {Array.from({ length: onlineRoom.teamSize }, (_, index) => {
+                          const member = onlineRoom.players.find((player) => player.team === team && player.index === index);
+                          return <article key={`${team}-${index}`} className={member?.ready ? "ready" : ""}>
+                            <b>{member ? member.nickname : "참가 대기"}</b>
+                            <span>{member ? HEROES.find((candidate) => candidate.id === member.heroId)?.name : `SLOT ${index + 1}`}</span>
+                            <em>{member ? member.aiControlled ? "AI 인계" : member.connected ? member.ready ? "준비 완료" : "준비 중" : "연결 끊김" : "빈 슬롯"}</em>
+                          </article>;
+                        })}
+                      </section>
+                    ))}
+                  </div>
+                  <div className="online-lobby-actions">
+                    {(() => {
+                      const me = onlineRoom.players.find((player) => player.id === onlineIdentity?.playerId), host = me?.id === onlineRoom.hostId;
+                      return <>
+                        {onlineRoom.status === "lobby" && <button disabled={onlineBusy} onClick={() => roomAction(me?.ready ? "unready" : "ready")}>{me?.ready ? "준비 취소" : "준비 완료"}</button>}
+                        {host && onlineRoom.status === "lobby" && <button className="start" disabled={onlineBusy || !roomCanStart(onlineRoom)} onClick={() => roomAction("start")}>전투 시작</button>}
+                        {host && onlineRoom.status === "finished" && <button className="start" disabled={onlineBusy} onClick={() => roomAction("rematch")}>재대전 준비</button>}
+                        <button className="leave" onClick={() => roomAction("leave")}>방 나가기</button>
+                      </>;
+                    })()}
+                  </div>
+                  {onlineRoom.status === "countdown" && <strong className="online-countdown">전투 동기화 중 · 잠시 후 투입</strong>}
+                  {onlineRoom.status === "finished" && <strong className="online-countdown">{onlineRoom.winner === "blue" ? "A TEAM" : "B TEAM"} 승리 · {onlineRoom.hostId === onlineIdentity?.playerId ? "재대전을 선택할 수 있습니다" : "방장의 재대전 선택을 기다리는 중"}</strong>}
+                </div>
+              )}
               <p className="lobby-notice">{lobbyNotice}</p>
             </section>
           ) : (
@@ -8501,7 +8931,7 @@ export default function Seoul999mBelow() {
                   : "네가 만든 땅굴을 따라 아군이 적 거점을 무너뜨렸습니다."
                 : isCampaign ? `${selectedCampaignInfo.title} 작전 조건을 달성하지 못했습니다.` : "적 굴착대가 우리 생존 거점을 파괴했습니다."}
             </p>
-            <button onClick={() => location.reload()}>다시 굴착</button>
+            {activeMatchConfig?.kind === "online" ? <button onClick={returnToOnlineRoom}>온라인 방으로</button> : <button onClick={() => location.reload()}>다시 굴착</button>}
             <button onClick={exitToMenu}>첫 화면으로</button>
           </article>
         </div>

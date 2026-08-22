@@ -124,3 +124,48 @@ export const createComputerMatch = (input: {
   return config;
 };
 
+export const createOnlineMatch = (input: {
+  teamSize: TeamSize;
+  mapId: BattleMapId;
+  seed: number;
+  localPlayerId: string;
+  players: Array<{
+    id: string;
+    team: "blue" | "red";
+    index: 0 | 1;
+    heroId: string;
+    faction: FactionId;
+    aiControlled?: boolean;
+  }>;
+}): MatchConfig => {
+  const local = input.players.find((player) => player.id === input.localPlayerId);
+  if (!local) throw new Error("Local online player is not in the room.");
+  const own = input.players
+      .filter((player) => player.team === local.team)
+      .sort((a, b) => (a.id === local.id ? -1 : b.id === local.id ? 1 : a.index - b.index)),
+    enemy = input.players
+      .filter((player) => player.team !== local.team)
+      .sort((a, b) => a.index - b.index),
+    toSlots = (players: typeof input.players, team: "blue" | "red") =>
+      players.map((player, index) => ({
+        id: player.id,
+        team,
+        index: index as 0 | 1,
+        controller: (player.id === local.id ? "local" : player.aiControlled ? "ai" : "remote") as ControllerKind,
+        heroId: player.heroId,
+        route: (index === 0 ? "A" : "B") as "A" | "B",
+      }));
+  const config: MatchConfig = {
+    kind: "online",
+    teamSize: input.teamSize,
+    mapId: input.mapId,
+    seed: input.seed,
+    teams: [
+      { faction: own[0].faction, slots: toSlots(own, "blue") },
+      { faction: enemy[0].faction, slots: toSlots(enemy, "red") },
+    ],
+  };
+  const errors = validateMatchConfig(config);
+  if (errors.length) throw new Error(errors.join("\n"));
+  return config;
+};

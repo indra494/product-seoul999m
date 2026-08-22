@@ -1773,6 +1773,65 @@ button {
   font-size: 7px;
   border-left: 2px solid #315b5b;
 }
+.online-room-options {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr 1.4fr;
+  gap: 8px;
+  margin: 12px 0;
+}
+.online-room-options fieldset,
+.online-room-options label {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  color: #9ba39b;
+  font: 700 10px sans-serif;
+}
+.online-room-options fieldset {
+  grid-template-columns: 1fr 1fr;
+}
+.online-room-options legend { grid-column: 1 / -1; margin-bottom: 5px; }
+.online-room-options button,
+.online-room-options select {
+  min-height: 36px;
+  border: 1px solid #404841;
+  background: #080b0b;
+  color: #d8d4c8;
+  font: 700 10px sans-serif;
+}
+.online-room-options button.active { border-color: #55dce9; color: #55dce9; background: #102024; }
+.online-lobby { margin-top: 12px; }
+.room-code-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  padding: 10px 12px;
+  border: 1px solid #55513f;
+  background: #11130f;
+}
+.room-code-card span { color: #8f8a77; font: 800 9px sans-serif; letter-spacing: 2px; }
+.room-code-card strong { color: #f1c85e; font: 900 24px sans-serif; letter-spacing: 4px; }
+.room-code-card small { grid-column: 1 / -1; color: #8a918a; font: 700 10px sans-serif; }
+.online-slots { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 8px; }
+.online-slots section { padding: 8px; border: 1px solid #334a49; background: #081011; }
+.online-slots section.red { border-color: #533a35; background: #120b0a; }
+.online-slots h3 { margin: 0 0 6px; color: #58dbe8; font: 900 10px sans-serif; }
+.online-slots .red h3 { color: #ed7665; }
+.online-slots article { display: grid; grid-template-columns: 1fr auto; gap: 3px; min-height: 44px; padding: 7px; margin-top: 5px; border: 1px solid #29302d; background: #090c0c; }
+.online-slots article b { color: #e2ded2; font: 800 11px sans-serif; }
+.online-slots article span { color: #9ca29b; font: 700 9px sans-serif; }
+.online-slots article em { grid-column: 1 / -1; color: #706f65; font: 700 8px sans-serif; font-style: normal; }
+.online-slots article.ready { border-color: #ad8d3e; box-shadow: inset 3px 0 #d4ae4d; }
+.online-slots article.ready em { color: #e1bd61; }
+.online-lobby-actions { display: flex; gap: 7px; margin-top: 9px; }
+.online-lobby-actions button { flex: 1; min-height: 38px; border: 1px solid #425b58; background: #10201f; color: #9fd4cd; font: 800 10px sans-serif; }
+.online-lobby-actions button.start { border-color: #b59242; background: #2a2110; color: #f0ca69; }
+.online-lobby-actions button.leave { flex: 0.7; border-color: #523936; background: #1c0e0d; color: #c77a70; }
+.online-lobby-actions button:disabled,
+.room-actions button:disabled { opacity: 0.38; cursor: not-allowed; }
+.online-countdown { display: block; margin-top: 9px; padding: 9px; text-align: center; color: #f0ca69; background: #231d0f; }
 @media (max-width: 850px) {
   .title-screen {
     min-height: 620px;

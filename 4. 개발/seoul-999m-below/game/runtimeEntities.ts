@@ -43,7 +43,7 @@ export type Unit = {
   arenaTargetUntil?: number;
   arenaSkillReadyAt?: number;
   arenaUltimateReadyAt?: number;
-  arenaActionSlot?: 0 | 1 | 2 | 4;
+  arenaActionSlot?: 0 | 1 | 2 | 3 | 4;
   arenaActionStartedAt?: number;
   arenaActionDuration?: number;
   arenaActionUntil?: number;
@@ -72,6 +72,13 @@ export type Unit = {
   routeRetreating?: boolean;
   routeResumeIndex?: number;
   formationSide?: -1 | 0 | 1;
+  aiCooldowns?: [number, number, number, number];
+  aiPreviousAction?: string;
+  aiTargetId?: number;
+  aiDecisionReason?: string;
+  onlinePlayerId?: string;
+  networkController?: "remote" | "ai";
+  remoteGoal?: { x: number; y: number };
 };
 
 export type Turret = {
@@ -110,6 +117,8 @@ type HeroUnitOptions = {
   hp?: number;
   attack?: number;
   armor?: number;
+  onlinePlayerId?: string;
+  networkController?: "remote" | "ai";
 };
 
 export const createHeroUnit = (options: HeroUnitOptions): Unit => {
@@ -140,6 +149,8 @@ export const createHeroUnit = (options: HeroUnitOptions): Unit => {
     campaignHeroId: definition.id,
     campaignAi: options.controller,
     level: 1,
+    onlinePlayerId: options.onlinePlayerId,
+    networkController: options.networkController,
   };
 };
 
