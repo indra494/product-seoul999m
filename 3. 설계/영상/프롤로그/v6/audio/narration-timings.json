@@ -1,0 +1,31 @@
+{
+  "voice": "Microsoft Heami Desktop",
+  "gender": "Female",
+  "culture": "ko-KR",
+  "rate": 0,
+  "profile": "theater-v6",
+  "duration": 14.9553,
+  "gapSeconds": 0.08,
+  "segments": [
+    {
+      "index": 0,
+      "start": 0.0,
+      "end": 1.9191
+    },
+    {
+      "index": 1,
+      "start": 1.9991,
+      "end": 8.8474
+    },
+    {
+      "index": 2,
+      "start": 8.9274,
+      "end": 12.4412
+    },
+    {
+      "index": 3,
+      "start": 12.5212,
+      "end": 14.9553
+    }
+  ]
+}

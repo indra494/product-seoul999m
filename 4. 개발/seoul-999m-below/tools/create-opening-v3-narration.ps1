@@ -2,13 +2,15 @@ param(
   [string]$OutputRoot = "C:\data\game_builders\3. 설계\영상\프롤로그\v3",
   [ValidateRange(-10, 10)]
   [int]$Rate = 10,
-  [double]$MaximumDuration = 27.0
+  [double]$MaximumDuration = 27.0,
+  [ValidateSet("full", "hook-v5", "theater-v6", "theater-v7", "theater-v10")]
+  [string]$Profile = "full"
 )
 
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Speech
 
-$segments = @(
+$fullSegments = @(
   "지상은 죽었다. 하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
   "살아남은 사람들은 땅속으로 내려갔다.",
   "지하 구백구십구 미터. 과거에 건설된 공기 정화층이 아직 작동하는, 마지막 생존 가능 구역이었다.",
@@ -18,6 +20,45 @@ $segments = @(
   "나는 서울의 두더지다. 땅을 파고, 자원을 찾고, 새로운 도시로 향하는 길을 만드는 사람. 오늘도 평범한 굴착 작업이어야 했다.",
   "우리가 먼저 이곳에 온 것이 아니라는 사실을 발견하기 전까지는."
 )
+
+$hookV5Segments = @(
+  "지상은 죽었다.",
+  "지하 구백구십구 미터.",
+  "하지만 터널을 통해 오간 것은 희망만이 아니었다.",
+  "우리는 서울의 두더지 대원이라고 불린다.",
+  "우리가 먼저 이곳에 온 것이 아니라는 사실을 발견하기 전까지는."
+)
+
+$theaterV6Segments = @(
+  "지상은 죽었다.",
+  "하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
+  "살아남은 사람들은 땅속으로 내려갔다.",
+  "지하 구백구십구 미터."
+)
+
+$theaterV7Segments = @(
+  "지상은 죽었다.",
+  "하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
+  "살아남은 사람들은 땅속으로 내려갔다.",
+  "지하 구백구십구 미터."
+)
+
+$theaterV10Segments = @(
+  "지상은 죽었다.",
+  "하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
+  "살아남은 사람들은 땅속으로 내려갔다.",
+  "지하 구백구십구 미터. 과거에 건설된 공기 정화층이 아직 작동하는, 생존 가능 구역이었다.",
+  "서울도 그곳에 새로운 도시를 세웠다.",
+  "각 도시의 연구자들은 언젠가 지상을 되살리기 위한 연구를 계속했다."
+)
+
+$segments = switch ($Profile) {
+  "hook-v5" { $hookV5Segments }
+  "theater-v6" { $theaterV6Segments }
+  "theater-v7" { $theaterV7Segments }
+  "theater-v10" { $theaterV10Segments }
+  default { $fullSegments }
+}
 
 $audioRoot = Join-Path $OutputRoot "audio"
 $tempRoot = Join-Path $env:TEMP "seoul-999m-opening-v3-voice"
@@ -115,6 +156,7 @@ $metadata = [ordered]@{
   gender = "Female"
   culture = "ko-KR"
   rate = $Rate
+  profile = $Profile
   duration = [Math]::Round($duration, 4)
   gapSeconds = $gapSeconds
   segments = $timings

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>서울 지하 999M 오프닝 v5 렌더러</title>
+  <style>html,body{margin:0;background:#000;overflow:hidden}canvas{display:block;width:1920px;height:1080px}</style>
+</head>
+<body>
+<canvas id="opening" width="1920" height="1080"></canvas>
+<script>
+const W=1920,H=1080,FPS=30,DURATION=20,NARRATION_START=.35,LOGO_START=16.75;
+const ROOT="../../../3. 설계/영상/프롤로그/v5/";
+const ctx=document.querySelector("#opening").getContext("2d",{alpha:false});
+const archive=[
+ "지상은 죽었다.",
+ "하늘은 독성 먼지로 뒤덮였고, 인류는 더 이상 그곳에서 숨을 쉴 수 없었다.",
+ "살아남은 사람들은 땅속으로 내려갔다.",
+ "지하 999미터. 과거에 건설된 공기 정화층이 아직 작동하는, 마지막 생존 가능 구역이었다.",
+ "서울도 그곳에 새로운 도시를 세웠다.",
+ "전력망과 공장, 통신망은 무너졌고 사람들은 버려진 기계와 고철을 이어 붙이며 문명을 다시 시작했다.",
+ "세계의 지하 도시들은 비밀 터널로 연결되었다.",
+ "자원과 연구 자료가 오갔고, 각 도시의 연구자들은 언젠가 지상을 되살리기 위한 연구를 계속했다.",
+ "하지만 터널을 통해 오간 것은 희망만이 아니었다.",
+ "부족한 자원, 정체불명의 생물, 그리고 주인을 잃은 기계들이 도시 사이의 어둠을 차지하기 시작했다.",
+ "우리는 서울의 ‘두더지’ 대원이라고 불린다.",
+ "땅을 파고, 자원을 찾고, 새로운 도시로 향하는 길을 만드는 사람.",
+ "오늘도 평범한 굴착 작업이어야 했다.",
+ "우리가 먼저 이곳에 온 것이 아니라는 사실을 발견하기 전까지는."
+];
+const scenes=[
+ {image:"scene-01-dead-seoul.png",headline:[archive[0]],logs:[archive[1],archive[2]],pan:-.025,zoom:[1.02,1.10]},
+ {image:"scene-03-air-purification-layer.png",headline:["지하 999미터."],logs:[archive[3],archive[4]],pan:.018,zoom:[1.03,1.11]},
+ {image:"scene-06-secret-tunnels.png",headline:[archive[8]],logs:[archive[5],archive[6],archive[7]],pan:-.03,zoom:[1.03,1.12]},
+ {image:"scene-07-tunnel-threats.png",headline:[archive[10]],logs:[archive[9]],pan:.026,zoom:[1.04,1.14]},
+ {image:"scene-08-discovery.png",headline:[archive[13]],logs:[archive[11],archive[12]],pan:.05,zoom:[1.10,1.20]},
+];
+const names=[...new Set(scenes.map(x=>x.image)),"logo.png"];
+const images=new Map(); let audio,output,typeBus,voiceBuffer,timings,lastKey="",lastCount=0;
+const clamp=(v,a=0,b=1)=>Math.max(a,Math.min(b,v)); const smooth=v=>{v=clamp(v);return v*v*(3-2*v)};
+function transparentLogo(image){const c=document.createElement("canvas"),x=c.getContext("2d");c.width=image.width;c.height=image.height;x.drawImage(image,0,0);const p=x.getImageData(0,0,c.width,c.height);for(let i=0;i<p.data.length;i+=4){const lo=Math.min(p.data[i],p.data[i+1],p.data[i+2]),hi=Math.max(p.data[i],p.data[i+1],p.data[i+2]);if(lo>215&&hi-lo<12)p.data[i+3]=Math.round(p.data[i+3]*(1-smooth((lo-215)/24)))}x.clearRect(0,0,c.width,c.height);x.putImageData(p,0,0);return c}
+function loadImage(name){return new Promise((ok,no)=>{const i=new Image();i.onload=()=>{images.set(name,name==="logo.png"?transparentLogo(i):i);ok()};i.onerror=no;i.src=ROOT+"images/"+name})}
+function loadVoice(){return Promise.all([fetch(ROOT+"audio/narration-female-heami.wav"),fetch(ROOT+"audio/narration-timings.json")]).then(async([a,t])=>{timings=await t.json();const d=new AudioContext({sampleRate:48000});voiceBuffer=await d.decodeAudioData(await a.arrayBuffer());await d.close();timings.segments.forEach((x,i)=>{scenes[i].start=NARRATION_START+x.start;scenes[i].end=NARRATION_START+x.end+(i===scenes.length-1?.48:timings.gapSeconds)});if(scenes.at(-1).end>LOGO_START)throw Error("Voice is too long for 20-second hook")})}
+function cover(image,progress,scene,alpha=1){const base=Math.max(W/image.width,H/image.height),scale=base*(scene.zoom[0]+(scene.zoom[1]-scene.zoom[0])*smooth(progress)),w=image.width*scale,h=image.height*scale;ctx.save();ctx.globalAlpha=alpha;ctx.imageSmoothingEnabled=false;ctx.drawImage(image,(W-w)/2+scene.pan*W*(progress-.5),(H-h)/2,w,h);ctx.restore()}
+function darken(){const g=ctx.createLinearGradient(0,H*.35,0,H);g.addColorStop(0,"rgba(0,0,0,0)");g.addColorStop(1,"rgba(0,0,0,.9)");ctx.fillStyle=g;ctx.fillRect(0,0,W,H);const r=ctx.createRadialGradient(W/2,H/2,H*.2,W/2,H/2,W*.72);r.addColorStop(0,"rgba(0,0,0,0)");r.addColorStop(1,"rgba(0,0,0,.58)");ctx.fillStyle=r;ctx.fillRect(0,0,W,H)}
+function click(){if(!audio||!typeBus)return;const o=audio.createOscillator(),g=audio.createGain(),n=audio.currentTime;o.type="square";o.frequency.value=940;g.gain.setValueAtTime(.025,n);g.gain.exponentialRampToValueAtTime(.0001,n+.025);o.connect(g).connect(typeBus);o.start(n);o.stop(n+.03)}
+function headline(lines,time,duration,key){const full=lines.join("\n"),chars=[...full],count=clamp(Math.floor((time-.06)/Math.min(.55,duration*.18)*chars.length),0,chars.length),typed=chars.slice(0,count).join("");if(key!==lastKey){lastKey=key;lastCount=0}if(count-lastCount>=3&&count<chars.length){click();lastCount=count}ctx.save();ctx.textAlign="center";ctx.textBaseline="middle";ctx.font="700 56px 'Malgun Gothic',sans-serif";ctx.lineWidth=9;ctx.strokeStyle="rgba(0,0,0,.9)";ctx.fillStyle="#eee6d7";ctx.shadowColor="#000";ctx.shadowBlur=18;const ls=typed.split("\n"),lh=78,y0=830-(ls.length-1)*lh/2;ls.forEach((s,i)=>{ctx.strokeText(s,W/2,y0+i*lh);ctx.fillText(s,W/2,y0+i*lh)});ctx.restore()}
+function systemLog(lines,time){if(!lines.length)return;const index=Math.floor(time/.38)%lines.length,text=lines[index];ctx.save();ctx.globalAlpha=.72;ctx.fillStyle="rgba(5,12,12,.78)";ctx.fillRect(85,78,W-170,98);ctx.strokeStyle="rgba(88,178,174,.4)";ctx.strokeRect(85,78,W-170,98);ctx.font="600 25px 'Consolas','Malgun Gothic',sans-serif";ctx.fillStyle="#9edbd5";ctx.fillText("[서울 지하 생존 기록 // 수신 오류]  "+text,112,136);ctx.font="600 20px 'Consolas',sans-serif";ctx.fillStyle="#d39661";ctx.fillText("두두두두…  ARCHIVE BUFFERING … 삐—",112,165);ctx.restore()}
+function draw(t){ctx.fillStyle="#000";ctx.fillRect(0,0,W,H);if(t<LOGO_START){let index=scenes.findIndex(s=>t>=s.start&&t<s.end);if(index<0)index=t<NARRATION_START?0:scenes.length-1;const s=scenes[index],st=Math.max(0,t-s.start),dur=s.end-s.start;cover(images.get(s.image),clamp(st/dur),s);if(index>0&&st<.28)cover(images.get(scenes[index-1].image),1,scenes[index-1],1-smooth(st/.28));darken();systemLog(s.logs,st);ctx.save();ctx.globalAlpha=Math.min(smooth(st/.2),smooth((s.end-t)/.18));headline(s.headline,st,dur,"s"+index);ctx.restore()}else{const i=images.get("logo.png"),lt=t-LOGO_START,a=smooth(lt/.4)*smooth((DURATION-t)/.35),sc=Math.min(930/i.width,610/i.height);ctx.save();ctx.globalAlpha=a;ctx.shadowColor="rgba(75,180,175,.35)";ctx.shadowBlur=38;ctx.drawImage(i,(W-i.width*sc)/2,(H-i.height*sc)/2,i.width*sc,i.height*sc);ctx.restore()}const seed=Math.floor(t*FPS)*1664525;ctx.save();ctx.globalAlpha=.045;ctx.fillStyle=seed%2?"#d8ccb5":"#274445";for(let i=0;i<100;i++)ctx.fillRect((seed*(i+3)*17)%W,(seed*(i+9)*29)%H,2,2);ctx.restore()}
+async function audioTrack(){audio=new AudioContext({sampleRate:48000});await audio.resume();output=audio.createMediaStreamDestination();const now=audio.currentTime,comp=audio.createDynamicsCompressor();comp.threshold.value=-18;comp.knee.value=12;comp.ratio.value=3;comp.connect(output);const music=audio.createGain();music.gain.setValueAtTime(.92,now);music.gain.setValueAtTime(1.05,now+11);music.gain.linearRampToValueAtTime(.0001,now+DURATION);music.connect(comp);typeBus=audio.createGain();typeBus.gain.value=.45;typeBus.connect(comp);
+ const nbuf=audio.createBuffer(1,audio.sampleRate*2,audio.sampleRate),nd=nbuf.getChannelData(0);for(let i=0;i<nd.length;i++)nd[i]=(Math.random()*2-1)*.32;const ns=audio.createBufferSource(),nf=audio.createBiquadFilter(),ng=audio.createGain();ns.buffer=nbuf;ns.loop=true;nf.type="lowpass";nf.frequency.value=180;ng.gain.value=.075;ns.connect(nf).connect(ng).connect(music);ns.start(now);ns.stop(now+DURATION);
+ [36.71,55,73.42].forEach((f,i)=>{const o=audio.createOscillator(),g=audio.createGain();o.type=i?"triangle":"sine";o.frequency.value=f;g.gain.value=[.14,.05,.03][i];o.connect(g).connect(music);o.start(now);o.stop(now+DURATION)});
+ for(let at=.7;at<LOGO_START;at+=.82){const o=audio.createOscillator(),g=audio.createGain();o.type="sine";o.frequency.setValueAtTime(58,now+at);o.frequency.exponentialRampToValueAtTime(34,now+at+.34);g.gain.setValueAtTime(.0001,now+at);g.gain.exponentialRampToValueAtTime(.16,now+at+.018);g.gain.exponentialRampToValueAtTime(.0001,now+at+.39);o.connect(g).connect(music);o.start(now+at);o.stop(now+at+.42)}
+ for(let at=1.6;at<LOGO_START;at+=2.45){const o=audio.createOscillator(),f=audio.createBiquadFilter(),g=audio.createGain();o.type="square";o.frequency.value=620+(at%3)*120;f.type="bandpass";f.frequency.value=o.frequency.value;f.Q.value=8;g.gain.setValueAtTime(.0001,now+at);g.gain.exponentialRampToValueAtTime(.065,now+at+.01);g.gain.exponentialRampToValueAtTime(.0001,now+at+.26);o.connect(f).connect(g).connect(music);o.start(now+at);o.stop(now+at+.3)}
+ const ten=audio.createOscillator(),tf=audio.createBiquadFilter(),tg=audio.createGain();ten.type="sawtooth";ten.frequency.value=116.54;tf.type="bandpass";tf.frequency.value=165;tf.Q.value=3;tg.gain.setValueAtTime(.0001,now+10);tg.gain.exponentialRampToValueAtTime(.03,now+13.5);tg.gain.exponentialRampToValueAtTime(.0001,now+18.7);ten.connect(tf).connect(tg).connect(music);ten.start(now+10);ten.stop(now+19);
+ const v=audio.createBufferSource(),vf=audio.createBiquadFilter(),vg=audio.createGain();v.buffer=voiceBuffer;vf.type="highpass";vf.frequency.value=75;vg.gain.value=1.05;v.connect(vf).connect(vg).connect(comp);v.start(now+NARRATION_START);v.stop(now+NARRATION_START+voiceBuffer.duration+.05);return output.stream.getAudioTracks()[0]}
+window.renderOpening=async()=>{const at=await audioTrack(),stream=new MediaStream([...document.querySelector("canvas").captureStream(FPS).getVideoTracks(),at]),mime=MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E")?"video/mp4;codecs=avc1.42E01E":"video/mp4",rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:3800000,audioBitsPerSecond:160000}),chunks=[];rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);const stop=new Promise((ok,no)=>{rec.addEventListener("stop",ok,{once:true});rec.addEventListener("error",no,{once:true})});rec.start(1000);const start=performance.now();await new Promise(ok=>{function frame(n){const t=Math.min((n-start)/1000,DURATION);draw(t);t>=DURATION?ok():requestAnimationFrame(frame)}requestAnimationFrame(frame)});rec.stop();await stop;stream.getTracks().forEach(x=>x.stop());await audio.close();const blob=new Blob(chunks,{type:mime}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="seoul-999m-opening-v5.mp4";a.click();return{size:blob.size,mimeType:mime,duration:DURATION,narrationDuration:voiceBuffer.duration}};
+Promise.all([...names.map(loadImage),loadVoice()]).then(()=>{draw(0);window.__openingReady=true}).catch(e=>{window.__openingError=String(e.stack||e);console.error(e)});
+</script>
+</body>
+</html>
