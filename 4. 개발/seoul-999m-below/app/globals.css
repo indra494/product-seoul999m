@@ -1870,6 +1870,7 @@ button {
   background: #080b0bf5;
   box-shadow: 10px 10px #000;
 }
+.skirmish-config{display:grid;gap:10px;margin:10px 0;padding:10px;border:1px solid #8f765755;background:#070b0cdd}.team-size-select,.battle-map-select{display:flex;gap:7px;align-items:stretch}.team-size-select>b,.battle-map-select>b{min-width:72px;color:#dcc18a;font-size:12px;align-self:center}.skirmish-config button,.ally-select button{border:1px solid #536064;background:#101719;color:#cbd1ce;padding:7px 10px;font:600 11px system-ui;cursor:pointer}.skirmish-config button.active,.ally-select button.active{border-color:#e0bd63;background:#2a2415;color:#ffe59b}.battle-map-select button{display:grid;gap:2px;text-align:left;flex:1}.battle-map-select small,.ally-select small{display:block;color:#879391;font-size:9px}.roster-grid article.selected{border-color:#e4be5f;box-shadow:inset 0 0 0 1px #e4be5f55}.ally-select{margin-top:12px;padding:10px;border:1px solid #527076;background:#081012}.ally-select>b{display:block;margin-bottom:8px;color:#83e2e8}.ally-select>div{display:flex;gap:8px}.ally-select button{display:grid;gap:2px;min-width:110px;text-align:left}.skirmish-start{width:100%;margin-top:12px;padding:13px;border:1px solid #e1bc60;background:linear-gradient(90deg,#4a3718,#7a5a22,#4a3718);color:#fff1bf;font:800 14px system-ui;cursor:pointer}
 .faction-tabs {
   display: grid;
   grid-template-columns: repeat(3, 1fr);

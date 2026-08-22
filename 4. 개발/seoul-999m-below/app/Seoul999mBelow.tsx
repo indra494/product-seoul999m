@@ -22,6 +22,9 @@ import {
 import { heroKit } from "../game/heroKits";
 import { heroAction } from "../game/heroActions";
 import { heroFramePlan } from "../game/heroPresentation";
+import { BATTLE_MAPS, applyBattleMapLayout, battleMap } from "../game/battleMaps";
+import { CombatAudio, type CombatSfx } from "../game/combatAudio";
+import { createComputerMatch, type BattleMapId, type MatchConfig, type TeamSize } from "../game/matchConfig";
 import {
   createBuildableUnit,
   createCivilianUnit,
@@ -43,6 +46,7 @@ type Tile = {
   freshUntil?: number;
   surface?: "shallowWater" | "platform" | "ramp";
   obstacle?: "root" | "deepWater" | "ledge";
+  hazard?: "steam";
 };
 type Shot = {
   x: number;
@@ -206,6 +210,10 @@ export default function Seoul999mBelow() {
   const [rosterFaction, setRosterFaction] = useState<FactionId>("human"),
     [routeStances, setRouteStances] = useState<Record<RouteId, RouteStance>>({ A: "guard", B: "guard" }),
     [selectedHeroId, setSelectedHeroId] = useState("yoo-seungcheon"),
+    [selectedAllyHeroId, setSelectedAllyHeroId] = useState("kimssi"),
+    [skirmishTeamSize, setSkirmishTeamSize] = useState<TeamSize>(1),
+    [selectedMapId, setSelectedMapId] = useState<BattleMapId>("central-exchange"),
+    [activeMatchConfig, setActiveMatchConfig] = useState<MatchConfig | null>(null),
     [talentPrompt, setTalentPrompt] = useState<3 | 5 | null>(null);
   const [hud, setHud] = useState({
       ally: 600,
@@ -339,6 +347,17 @@ export default function Seoul999mBelow() {
       activeBuildables.map((def) => [def.id, def]),
     ) as Record<string, BuildableDefinition>;
   const startSkirmish = (heroId: string) => {
+    const hero = HEROES.find((candidate) => candidate.id === heroId),
+      fallbackAlly = HEROES.find((candidate) => candidate.faction === hero?.faction && candidate.id !== heroId),
+      allyId = HEROES.some((candidate) => candidate.id === selectedAllyHeroId && candidate.faction === hero?.faction && candidate.id !== heroId)
+        ? selectedAllyHeroId
+        : fallbackAlly?.id;
+    setActiveMatchConfig(createComputerMatch({
+      teamSize: skirmishTeamSize,
+      mapId: selectedMapId,
+      playerHeroId: heroId,
+      allyHeroId: allyId,
+    }));
     setGameMode("skirmish");
     setSelectedHeroId(heroId);
     pausedRef.current = false;
@@ -517,6 +536,7 @@ export default function Seoul999mBelow() {
       wave = 0,
       spawnClock = 1600,
       passiveClock = 0,
+      steamDamageClock = 0,
       heroXp = 0,
       heroLevel = 1,
       minionLevel = 1,
@@ -543,8 +563,7 @@ export default function Seoul999mBelow() {
       survivalCd = 0,
       jumpVisual: JumpVisual | null = null,
       itemSlots: [ItemId | null, ItemId | null] = [null, null],
-      audio: AudioContext | null = null,
-      ambientTimer: ReturnType<typeof setInterval> | null = null,
+      combatAudio = new CombatAudio(),
       aimingSkill: Skill = 0,
       buildMode: BuildMode = "none",
       routeEdit: RouteId | null = null,
@@ -558,13 +577,14 @@ export default function Seoul999mBelow() {
         x: number;
         y: number;
       } | null = null;
-    const kit = heroKit(playerDef.id),
+    const selectedBattleMap = battleMap(activeMatchConfig?.mapId ?? selectedMapId),
+      kit = heroKit(playerDef.id),
       enemyChoices = (Object.keys(FACTIONS) as FactionId[]).filter(
         (id) => id !== playerDef.faction,
       ),
       enemyFaction: FactionId = isCampaign
         ? "bugborn"
-        : enemyChoices[Math.floor(Math.random() * enemyChoices.length)],
+        : activeMatchConfig?.teams[1].faction ?? enemyChoices[Math.floor(Math.random() * enemyChoices.length)],
       talents = new Set<string>(),
       keys = new Set<string>(),
       shots: Shot[] = [],
@@ -770,22 +790,12 @@ export default function Seoul999mBelow() {
       }
       ctx.restore();
     };
-    const allies = [
-        { x: 5, y: 6 },
-        { x: 6, y: 18 },
-        { x: 5, y: 29 },
-      ],
-      enemies = [
-        { x: 50, y: 6 },
-        { x: 49, y: 18 },
-        { x: 50, y: 29 },
-      ],
-      ALLY = isCampaign
+    const ALLY = isCampaign
         ? { x: 7, y: 18 }
-        : allies[Math.floor(Math.random() * allies.length)],
+        : { ...selectedBattleMap.spawns.blue },
       ENEMY = isCampaign
         ? { x: 50, y: 18 }
-        : enemies[Math.floor(Math.random() * enemies.length)];
+        : { ...selectedBattleMap.spawns.red };
     const grid: Tile[][] = Array.from({ length: ROWS }, (_, y) =>
       Array.from({ length: COLS }, (_, x) => {
         if (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1)
@@ -851,38 +861,33 @@ export default function Seoul999mBelow() {
           rampY = rampSide === "top" ? top : top + height - 1;
         for (let x = rampX; x < rampX + 2; x++) setTerrain(x, rampY, 11);
       };
-    buildPlatform(14, 6, 9, 8, "bottom");
-    buildPlatform(35, 22, 9, 8, "top");
-    for (let y = 4; y < ROWS - 4; y++)
-      if (y < 15 || y > 19) {
-        const cx = Math.round(COLS / 2 + Math.sin(y * 0.43) * 3);
-        for (let w = 0; w < 2; w++) setTerrain(cx + w, y, 8);
-        setTerrain(cx - 1, y, 9);
-        setTerrain(cx + 2, y, 9);
-      }
-    for (const side of [-1, 1])
-      for (let n = 0; n < 13; n++) {
-        const x = side < 0 ? 8 + n : 35 + n,
-          y = Math.round(
-            (side < 0 ? 26 : 10) + Math.sin(n * 0.48) * (side < 0 ? 2 : 3),
-          );
-        setTerrain(x, y, 6, 99);
-        if (n % 3 === 1) {
-          setTerrain(x, y + side, 7, 4);
-          setTerrain(x + 1, y + side, 7, 4);
+    if (isCampaign) {
+      buildPlatform(14, 6, 9, 8, "bottom");
+      buildPlatform(35, 22, 9, 8, "top");
+      for (let y = 4; y < ROWS - 4; y++)
+        if (y < 15 || y > 19) {
+          const cx = Math.round(COLS / 2 + Math.sin(y * 0.43) * 3);
+          for (let w = 0; w < 2; w++) setTerrain(cx + w, y, 8);
+          setTerrain(cx - 1, y, 9);
+          setTerrain(cx + 2, y, 9);
         }
-      }
-    for (const [x, y] of [
-      [10, 9],
-      [11, 9],
-      [10, 10],
-      [45, 25],
-      [46, 25],
-      [45, 26],
-      [22, 27],
-      [23, 27],
-    ])
-      setTerrain(x, y, 7, 4);
+      for (const side of [-1, 1])
+        for (let n = 0; n < 13; n++) {
+          const x = side < 0 ? 8 + n : 35 + n,
+            y = Math.round(
+              (side < 0 ? 26 : 10) + Math.sin(n * 0.48) * (side < 0 ? 2 : 3),
+            );
+          setTerrain(x, y, 6, 99);
+          if (n % 3 === 1) {
+            setTerrain(x, y + side, 7, 4);
+            setTerrain(x + 1, y + side, 7, 4);
+          }
+        }
+      for (const [x, y] of [
+        [10, 9], [11, 9], [10, 10], [45, 25],
+        [46, 25], [45, 26], [22, 27], [23, 27],
+      ]) setTerrain(x, y, 7, 4);
+    } else applyBattleMapLayout(grid, selectedBattleMap.id);
     const seen: boolean[][] = Array.from({ length: ROWS }, () =>
         Array(COLS).fill(false),
       ),
@@ -957,7 +962,7 @@ export default function Seoul999mBelow() {
       { x: 46, y: 18 },
       { x: 49, y: 18 },
     ];
-    const enemyHeroId = enemyFaction === "human" ? "kimssi" : enemyFaction === "bugborn" ? "cheolgak" : "d09",
+    const enemyHeroId = activeMatchConfig?.teams[1].slots[0]?.heroId ?? (enemyFaction === "human" ? "kimssi" : enemyFaction === "bugborn" ? "cheolgak" : "d09"),
       heroBaseHp = Math.round((180 * playerDef.stats.maxHp) / 820),
       heroBaseAttack = Math.round((34 * playerDef.stats.damage) / 42),
       hero: Unit = createHeroUnit({
@@ -980,14 +985,23 @@ export default function Seoul999mBelow() {
         hp: 190,
         attack: 38,
         armor: enemyFaction === "ai" ? 22 : 18,
-      });
+      }),
+      allySlot = !isCampaign ? activeMatchConfig?.teams[0].slots[1] : undefined,
+      enemySecondSlot = !isCampaign ? activeMatchConfig?.teams[1].slots[1] : undefined,
+      allyHero = allySlot ? createHeroUnit({
+        id: unitId++, heroId: allySlot.heroId, x: ALLY.x + 1, y: ALLY.y + 2, team: "blue",
+      }) : null,
+      enemySecondHero = enemySecondSlot ? createHeroUnit({
+        id: unitId++, heroId: enemySecondSlot.heroId, x: ENEMY.x - 1, y: ENEMY.y + 2, team: "red",
+      }) : null,
+      battleAiHeroes = [allyHero, enemyHero, enemySecondHero].filter((unit): unit is Unit => Boolean(unit));
     const playerStarter = factionBuildables(playerDef.faction).find(
         (def) => def.category !== "blocker",
       )!,
       enemyStarter = factionBuildables(enemyFaction).find(
         (def) => def.category !== "blocker",
       )!,
-      units: Unit[] = [hero, ...(isCampaign ? [] : [enemyHero])],
+      units: Unit[] = [hero, ...(isCampaign ? [] : battleAiHeroes)],
       turrets: Turret[] = [
         createBuildableUnit({
           id: buildId++,
@@ -1092,78 +1106,13 @@ export default function Seoul999mBelow() {
         return heroVisualAnchorX;
       };
     const startAmbient = () => {
-      try {
-        audio ??= new AudioContext();
-        if (audio.state === "suspended") audio.resume();
-        if (ambientTimer) return;
-        const drone = audio.createOscillator(),
-          droneGain = audio.createGain(),
-          shimmer = audio.createOscillator(),
-          shimmerGain = audio.createGain(),
-          now = audio.currentTime;
-        drone.type = "sine";
-        drone.frequency.setValueAtTime(isCampaign ? 46 : 52, now);
-        droneGain.gain.setValueAtTime(0.018, now);
-        shimmer.type = "triangle";
-        shimmer.frequency.setValueAtTime(isCampaign ? 73 : 82, now);
-        shimmerGain.gain.setValueAtTime(0.006, now);
-        drone.connect(droneGain);
-        shimmer.connect(shimmerGain);
-        droneGain.connect(audio.destination);
-        shimmerGain.connect(audio.destination);
-        drone.start(now);
-        shimmer.start(now);
-        let pulse = 0;
-        ambientTimer = setInterval(() => {
-          if (!audio || audio.state !== "running") return;
-          const beat = audio.createOscillator(), gain = audio.createGain(), at = audio.currentTime,
-            notes = isCampaign ? [110, 98, 123, 92] : [130, 146, 110, 123], freq = notes[pulse++ % notes.length];
-          beat.type = "triangle";
-          beat.frequency.setValueAtTime(freq, at);
-          beat.frequency.exponentialRampToValueAtTime(freq * 0.72, at + 0.5);
-          gain.gain.setValueAtTime(0.0001, at);
-          gain.gain.exponentialRampToValueAtTime(0.018, at + 0.04);
-          gain.gain.exponentialRampToValueAtTime(0.0001, at + 0.62);
-          beat.connect(gain);
-          gain.connect(audio.destination);
-          beat.start(at);
-          beat.stop(at + 0.66);
-        }, 1500);
-      } catch {}
+      void combatAudio.start(selectedBattleMap.id);
     };
     const tone = (
       kind: "dig" | "hit" | "shot" | "blast" | "coin" | "build" | "down",
     ) => {
-      try {
-        audio ??= new AudioContext();
-        if (audio.state === "suspended") audio.resume();
-        startAmbient();
-        const now = audio.currentTime,
-          o = audio.createOscillator(),
-          g = audio.createGain(),
-          map = {
-            dig: [105, 0.07, "square"],
-            hit: [70, 0.1, "sawtooth"],
-            shot: [420, 0.09, "triangle"],
-            blast: [48, 0.28, "sawtooth"],
-            coin: [760, 0.12, "sine"],
-            build: [230, 0.22, "square"],
-            down: [95, 0.35, "triangle"],
-          } as const,
-          [freq, dur, type] = map[kind];
-        o.type = type;
-        o.frequency.setValueAtTime(freq, now);
-        o.frequency.exponentialRampToValueAtTime(
-          Math.max(30, freq * 0.55),
-          now + dur,
-        );
-        g.gain.setValueAtTime(0.055, now);
-        g.gain.exponentialRampToValueAtTime(0.001, now + dur);
-        o.connect(g);
-        g.connect(audio.destination);
-        o.start(now);
-        o.stop(now + dur);
-      } catch {}
+      startAmbient();
+      void combatAudio.sfx(kind as CombatSfx);
     };
     const kindTone = (kind: BuildKind): "shot" | "blast" =>
       kind === "missileM2" || kind === "rootAmbusher" ? "blast" : "shot";
@@ -1188,6 +1137,8 @@ export default function Seoul999mBelow() {
             : null,
       open = (x: number, y: number) =>
         !!grid[y]?.[x] && WALKABLE_TERRAIN.has(grid[y][x].type),
+      terrainMoveFactor = (x: number, y: number) =>
+        grid[y]?.[x]?.surface === "shallowWater" ? 0.58 : 1,
       projectileOpen = (x: number, y: number) =>
         !!grid[y]?.[x] && PROJECTILE_TERRAIN.has(grid[y][x].type),
       resolveUnitOverlaps = () => {
@@ -1667,7 +1618,8 @@ export default function Seoul999mBelow() {
       const d = unitVector(dx, dy);
       if (!dx && !dy) return false;
       const speedBoost = performance.now() < hasteUntil ? 1.55 : 1,
-        advance = ((playerDef.stats.moveSpeed * speedBoost * S) / 1000) * dt,
+        terrainFactor = terrainMoveFactor(hero.x, hero.y),
+        advance = ((playerDef.stats.moveSpeed * speedBoost * terrainFactor * S) / 1000) * dt,
         px = heroWorld.x + d.x * advance,
         py = heroWorld.y + d.y * advance;
       if (heroWorldClear(px, py)) return commitHeroMove(px, py);
@@ -1714,9 +1666,10 @@ export default function Seoul999mBelow() {
         dist = Math.hypot(vx, vy);
       if (dist < 1.5) return true;
       const speedBoost = performance.now() < hasteUntil ? 1.55 : 1,
+        terrainFactor = terrainMoveFactor(hero.x, hero.y),
         advance = Math.min(
           dist,
-          ((playerDef.stats.moveSpeed * speedBoost * S) / 1000) * dt,
+          ((playerDef.stats.moveSpeed * speedBoost * terrainFactor * S) / 1000) * dt,
         ),
         px = heroWorld.x + (vx / dist) * advance,
         py = heroWorld.y + (vy / dist) * advance;
@@ -3828,7 +3781,7 @@ export default function Seoul999mBelow() {
         marchReservations.clear();
         lastMarchReservationFrame = reservationFrame;
       }
-      const tick = 1000 / u.moveSpeed;
+      const tick = 1000 / (u.moveSpeed * terrainMoveFactor(u.x, u.y));
       if (u.campaignThreat === "runner") {
         const core = u.team === "blue" ? ENEMY : ALLY;
         if (Math.abs(core.x - u.x) + Math.abs(core.y - u.y) === 1) {
@@ -4130,58 +4083,60 @@ export default function Seoul999mBelow() {
         ctx.restore();
       }
     };
-    const stepEnemyHero = () => {
-      if (!enemyHero.alive || enemyHero.act > 0) return;
+    const stepBattleHero = (aiHero: Unit) => {
+      if (!aiHero.alive || aiHero.act > 0) return;
+      const ownCore = aiHero.team === "blue" ? ALLY : ENEMY,
+        opposingCore = aiHero.team === "blue" ? ENEMY : ALLY;
       const threatened = units.some(
         (u) =>
           u.alive &&
-          u.team === "blue" &&
-          Math.hypot(u.x - ENEMY.x, u.y - ENEMY.y) < 9,
+          u.team !== aiHero.team &&
+          Math.hypot(u.x - ownCore.x, u.y - ownCore.y) < 9,
       );
-      let goal = ALLY;
-      if (enemyHero.hp < enemyHero.maxHp * 0.32 || threatened) goal = ENEMY;
-      const close = nearestEnemy(enemyHero, 1);
+      let goal = opposingCore;
+      if (aiHero.hp < aiHero.maxHp * 0.32 || threatened) goal = ownCore;
+      const close = nearestEnemy(aiHero, 1);
       if (close) {
         melee(
-          enemyHero,
-          { x: close.x - enemyHero.x, y: close.y - enemyHero.y },
+          aiHero,
+          { x: close.x - aiHero.x, y: close.y - aiHero.y },
           4,
         );
         return;
       }
-      const ranged = nearestEnemy(enemyHero, 8);
+      const ranged = nearestEnemy(aiHero, 8);
       if (
         ranged &&
-        enemyHero.shot <= 0 &&
-        clearRay(enemyHero.x, enemyHero.y, ranged.x, ranged.y)
+        aiHero.shot <= 0 &&
+        clearRay(aiHero.x, aiHero.y, ranged.x, ranged.y)
       ) {
-        enemyHero.dir = cardinal(
-          ranged.x - enemyHero.x,
-          ranged.y - enemyHero.y,
+        aiHero.dir = cardinal(
+          ranged.x - aiHero.x,
+          ranged.y - aiHero.y,
         );
-        fire(enemyHero, ranged.x - enemyHero.x, ranged.y - enemyHero.y);
-        enemyHero.act = 520;
+        fire(aiHero, ranged.x - aiHero.x, ranged.y - aiHero.y);
+        aiHero.act = 520;
         return;
       }
       if (
-        goal === ENEMY &&
-        Math.abs(enemyHero.x - ENEMY.x) + Math.abs(enemyHero.y - ENEMY.y) <= 2
+        goal === ownCore &&
+        Math.abs(aiHero.x - ownCore.x) + Math.abs(aiHero.y - ownCore.y) <= 2
       ) {
-        enemyHero.hp = Math.min(enemyHero.maxHp, enemyHero.hp + 3);
-        enemyHero.act = 500;
+        aiHero.hp = Math.min(aiHero.maxHp, aiHero.hp + 3);
+        aiHero.act = 500;
         return;
       }
-      const dx = goal.x - enemyHero.x,
-        dy = goal.y - enemyHero.y,
+      const dx = goal.x - aiHero.x,
+        dy = goal.y - aiHero.y,
         primary = cardinal(dx, dy),
         alternate = primary.x
           ? { x: 0, y: Math.sign(dy) || (Math.random() < 0.5 ? 1 : -1) }
           : { x: Math.sign(dx) || (Math.random() < 0.5 ? 1 : -1), y: 0 },
-        p = grid[enemyHero.y + primary.y]?.[enemyHero.x + primary.x],
-        a = grid[enemyHero.y + alternate.y]?.[enemyHero.x + alternate.x],
+        p = grid[aiHero.y + primary.y]?.[aiHero.x + primary.x],
+        a = grid[aiHero.y + alternate.y]?.[aiHero.x + alternate.x],
         choice = p && a && a.type !== 4 && a.hp < p.hp ? alternate : primary;
-      moveOrDig(enemyHero, choice.x, choice.y);
-      enemyHero.act = 260 + Math.random() * 130;
+      moveOrDig(aiHero, choice.x, choice.y);
+      aiHero.act = (260 + Math.random() * 130) / terrainMoveFactor(aiHero.x, aiHero.y);
     };
     const arenaFighters = () =>
         units.filter(
@@ -5145,6 +5100,7 @@ export default function Seoul999mBelow() {
         jumpVisual = null;
       passiveClock += dt;
       spawnClock -= dt;
+      steamDamageClock -= dt;
       while (commands.current.length) processCommand(commands.current.shift()!);
       updateBuildWork(dt);
       if (passiveClock >= 1000) {
@@ -5205,6 +5161,22 @@ export default function Seoul999mBelow() {
             }
           }
         }
+      }
+      const steamPhase = now % 5200;
+      if (
+        !isCampaign &&
+        selectedBattleMap.hazard === "steam" &&
+        steamPhase >= 2400 &&
+        steamPhase < 3900 &&
+        steamDamageClock <= 0
+      ) {
+        const exposed = units.filter(
+          (unit) => unit.alive && grid[unit.y]?.[unit.x]?.hazard === "steam",
+        );
+        for (const unit of exposed)
+          hurt(unit, 22, unit.team, false, 0, 1, true);
+        if (exposed.includes(hero)) setMessage("증기 분출! 환기구에서 즉시 이탈하라");
+        steamDamageClock = 700;
       }
       const m = mobileMove.current,
         dx =
@@ -5311,7 +5283,7 @@ export default function Seoul999mBelow() {
           }
           scientist.act = 1000 / scientist.moveSpeed;
         }
-      if (!isCampaign) stepEnemyHero();
+      if (!isCampaign) for (const aiHero of battleAiHeroes) stepBattleHero(aiHero);
       if (isCampaign && !(campaignChapter === 3 && campaignIntroClock < 5200))
         for (const fighter of units.filter((unit) => unit.campaignAi)) stepCampaignHero(fighter);
       for (const u of units) if (u.role === "minion" && !u.campaignScout) stepMinion(u);
@@ -6267,6 +6239,27 @@ export default function Seoul999mBelow() {
             ctx.fillStyle = "#b2d2cf55";
             if (neighbor(0, -1)?.surface !== "shallowWater")
               ctx.fillRect(px + 3, py + 1, S - 6, 2);
+          }
+          if (t.hazard === "steam") {
+            const phase = now % 5200,
+              warning = phase >= 1700 && phase < 2400,
+              active = phase >= 2400 && phase < 3900;
+            ctx.fillStyle = "#172225";
+            ctx.fillRect(px + 5, py + 5, S - 10, S - 10);
+            ctx.strokeStyle = warning ? "#ffcb48" : active ? "#fff4d0" : "#8b4b35";
+            ctx.lineWidth = active ? 3 : 2;
+            ctx.beginPath();
+            ctx.arc(px + S / 2, py + S / 2, 11, 0, Math.PI * 2);
+            ctx.stroke();
+            for (let vent = -1; vent <= 1; vent++) {
+              ctx.fillStyle = active
+                ? `rgba(235,246,232,${0.34 + ((Math.sin(now / 90 + vent) + 1) * 0.16)})`
+                : warning ? "#d9a83b88" : "#713c3188";
+              const rise = active ? (now / 8 + vent * 11 + seed) % 32 : 0;
+              ctx.beginPath();
+              ctx.arc(px + 20 + vent * 8, py + 27 - rise, active ? 8 : 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
           }
           return;
         }
@@ -7689,10 +7682,9 @@ export default function Seoul999mBelow() {
       canvas.removeEventListener("pointermove", pointermove);
       canvas.removeEventListener("pointercancel", pointerup);
       canvas.removeEventListener("contextmenu", contextmenu);
-      if (ambientTimer) clearInterval(ambientTimer);
-      audio?.close();
+      combatAudio.close();
     };
-  }, [screen, selectedHeroId, gameMode, campaignChapter]);
+  }, [screen, selectedHeroId, gameMode, campaignChapter, activeMatchConfig, selectedMapId]);
   if (screen === "prologue")
     return (
       <main className="campaign-cinematic">
@@ -7919,6 +7911,25 @@ export default function Seoul999mBelow() {
                   ×
                 </button>
               </div>
+              <div className="skirmish-config">
+                <div className="team-size-select">
+                  <b>대전 인원</b>
+                  {([1, 2] as TeamSize[]).map((size) => (
+                    <button key={size} className={skirmishTeamSize === size ? "active" : ""} onClick={() => setSkirmishTeamSize(size)}>
+                      {size}:{size}
+                    </button>
+                  ))}
+                </div>
+                <div className="battle-map-select">
+                  <b>전장 선택</b>
+                  {BATTLE_MAPS.map((map) => (
+                    <button key={map.id} className={selectedMapId === map.id ? "active" : ""} onClick={() => setSelectedMapId(map.id)}>
+                      <strong>{map.name}</strong>
+                      <small>{map.subtitle}</small>
+                    </button>
+                  ))}
+                </div>
+              </div>
               <nav className="faction-tabs">
                 {(Object.keys(FACTIONS) as FactionId[]).map((id) => (
                   <button
@@ -7935,7 +7946,7 @@ export default function Seoul999mBelow() {
               <div className="roster-grid">
                 {HEROES.filter((hero) => hero.faction === rosterFaction).map(
                   (hero, index) => (
-                    <article key={hero.id} className="playable">
+                    <article key={hero.id} className={`playable ${selectedHeroId === hero.id ? "selected" : ""}`}>
                       <div
                         className="roster-portrait"
                         style={
@@ -7970,13 +7981,32 @@ export default function Seoul999mBelow() {
                           {hero.skills[0]} / {hero.skills[1]} / {hero.skills[3]}
                         </small>
                       </span>
-                      <button onClick={() => startSkirmish(hero.id)}>
-                        이 캐릭터로 대전
+                      <button onClick={() => {
+                        setSelectedHeroId(hero.id);
+                        const ally = HEROES.find((candidate) => candidate.faction === hero.faction && candidate.id !== hero.id);
+                        if (ally) setSelectedAllyHeroId(ally.id);
+                      }}>
+                        {selectedHeroId === hero.id ? "선택됨" : "내 영웅 선택"}
                       </button>
                     </article>
                   ),
                 )}
               </div>
+              {skirmishTeamSize === 2 && (
+                <div className="ally-select">
+                  <b>AI 동료 선택 · 같은 종족</b>
+                  <div>
+                    {HEROES.filter((hero) => hero.faction === activeHeroDef.faction && hero.id !== selectedHeroId).map((hero) => (
+                      <button key={hero.id} className={selectedAllyHeroId === hero.id ? "active" : ""} onClick={() => setSelectedAllyHeroId(hero.id)}>
+                        <strong>{hero.name}</strong><small>{hero.role}</small>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+              <button className="skirmish-start" onClick={() => startSkirmish(selectedHeroId)}>
+                {skirmishTeamSize}:{skirmishTeamSize} · {battleMap(selectedMapId).name} 전투 시작
+              </button>
             </section>
           )}
           <footer>
@@ -8050,7 +8080,7 @@ export default function Seoul999mBelow() {
               : campaignChapter === 3
                 ? `제3장 · 격리 아레나 · 대련 상대 ${hud.enemies}명`
               : `제${campaignChapter}장 · ${selectedCampaignInfo.subtitle} · 적 ${hud.enemies}기${hud.missionTime ? ` · ${Math.floor(hud.missionTime / 60)}:${String(hud.missionTime % 60).padStart(2, "0")}` : ""}`
-            : `서울 지하 999M · WAVE ${hud.wave} · 진군대 LV.${hud.minionLevel}`}
+            : `${battleMap(activeMatchConfig?.mapId ?? selectedMapId).name} · WAVE ${hud.wave} · 진군대 LV.${hud.minionLevel}`}
         </h1>
         <div className="red">
           <b>{isCampaign && campaignChapter === 2 ? "PYEONGTAEK GATE" : "ENEMY CORE"}</b>
