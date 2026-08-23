@@ -40,6 +40,7 @@ export type OnlineRoomView = Omit<OnlineRoomState, "players"> & { players: Onlin
 export type OnlineBattleSnapshot = {
   sequence: number;
   issuedAt: number;
+  minionLevel: 1 | 2 | 3;
   allyCore: { hp: number; shield: number };
   enemyCore: { hp: number; shield: number };
   heroes: Array<{

@@ -68,15 +68,15 @@ export const MINIONS:MinionDefinition[]=[
 const build=(id:string,faction:FactionId,category:BuildableDefinition["category"],name:string,short:string,cost:number,hp:number,range:number,cooldown:number,damage:number,targets:number,critChance:number,critMultiplier:number,drillDurability:number,asset?:string):BuildableDefinition=>({id,faction,category,name,short,cost,hp,range,cooldown,damage,targets,critChance,critMultiplier,drillDurability,asset});
 
 export const BUILDABLES:BuildableDefinition[]=[
- build("rockBunker","human","multi","돌멩이 민방위 벙커","돌벙커",75,150,3,1500,8,3,.06,1.5,0,"/assets/buildables/human/human-rock-bunker-v1-alpha.png"),
- build("canMissile","human","ranged","깡통미사일 포대","캔포대",100,135,6,750,14,1,.08,1.5,0,"/assets/buildables/human/human-can-missile-v1-alpha.png"),
- build("brickWall","human","blocker","5겹 방어벽돌","5겹벽",35,220,0,0,0,0,0,1.5,5,"/assets/buildables/human/human-five-layer-wall-v2-alpha.png"),
- build("rootAmbusher","bugborn","multi","뿌리매복체","뿌리매복",60,125,2.5,400,3,4,.08,1.35,0,"/assets/buildables/bugborn/bugborn-root-ambusher-v1-alpha.png"),
- build("venomTree","bugborn","ranged","독침나무","독침나무",95,100,5.3,950,7,3,.08,1.35,0,"/assets/buildables/bugborn/bugborn-venom-tree-v1-alpha.png"),
- build("boneWall","bugborn","blocker","잡뼈 방벽","잡뼈벽",25,165,0,0,0,0,0,1.35,4,"/assets/buildables/bugborn/bugborn-bone-wall-v1-alpha.png"),
- build("laserL1","ai","ranged","직선광선기 L-1","광선기",125,175,7,2100,18,8,.04,1.6,0,"/assets/buildables/ai/ai-laser-l1-v1-alpha.png"),
- build("missileM2","ai","ranged","쌍발미사일기 M-2","쌍발 M-2",185,150,7.5,4200,42,2,.04,1.6,0,"/assets/buildables/ai/ai-missile-m2-v1-alpha.png"),
- build("armorWallA6","ai","blocker","철갑격벽 A-6","철갑벽",55,280,0,0,0,0,0,1.6,6,"/assets/buildables/ai/ai-armor-wall-a6-v1-alpha.png"),
+ build("rockBunker","human","multi","돌멩이 민방위 벙커","돌벙커",95,150,3,1500,8,3,.06,1.5,0,"/assets/buildables/human/human-rock-bunker-v1-alpha.png"),
+ build("canMissile","human","ranged","깡통미사일 포대","캔포대",130,135,6,750,14,1,.08,1.5,0,"/assets/buildables/human/human-can-missile-v1-alpha.png"),
+ build("brickWall","human","blocker","5겹 방어벽돌","5겹벽",45,220,0,0,0,0,0,1.5,5,"/assets/buildables/human/human-five-layer-wall-v2-alpha.png"),
+ build("rootAmbusher","bugborn","multi","뿌리매복체","뿌리매복",80,125,2.5,400,3,4,.08,1.35,0,"/assets/buildables/bugborn/bugborn-root-ambusher-v1-alpha.png"),
+ build("venomTree","bugborn","ranged","독침나무","독침나무",125,100,5.3,950,7,3,.08,1.35,0,"/assets/buildables/bugborn/bugborn-venom-tree-v1-alpha.png"),
+ build("boneWall","bugborn","blocker","잡뼈 방벽","잡뼈벽",35,165,0,0,0,0,0,1.35,4,"/assets/buildables/bugborn/bugborn-bone-wall-v1-alpha.png"),
+ build("laserL1","ai","ranged","직선광선기 L-1","광선기",145,175,7,2100,18,8,.04,1.6,0,"/assets/buildables/ai/ai-laser-l1-v1-alpha.png"),
+ build("missileM2","ai","ranged","쌍발미사일기 M-2","쌍발 M-2",215,150,7.5,4200,42,2,.04,1.6,0,"/assets/buildables/ai/ai-missile-m2-v1-alpha.png"),
+ build("armorWallA6","ai","blocker","철갑격벽 A-6","철갑벽",65,280,0,0,0,0,0,1.6,6,"/assets/buildables/ai/ai-armor-wall-a6-v1-alpha.png"),
 ];
 
 export const MINION_LEVELS=[

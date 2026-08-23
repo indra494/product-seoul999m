@@ -382,6 +382,32 @@ button {
   color: #929086;
   font-size: 9px;
 }
+.result .defeat-recap {
+  display: grid;
+  gap: 6px;
+  margin-top: 16px;
+  padding: 12px;
+  border: 1px solid #8f443d;
+  background: #090b0ce8;
+  text-align: left;
+}
+.result .defeat-recap > b {
+  color: #ff8a7d;
+  font-size: 13px;
+}
+.result .defeat-recap > span {
+  display: grid;
+  grid-template-columns: minmax(90px, .8fr) minmax(130px, 1.4fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: #d5d1c8;
+  font-size: 12px;
+  letter-spacing: 0;
+}
+.result .defeat-recap i,
+.result .defeat-recap em { font-style: normal; }
+.result .defeat-recap em { color: #aaa69b; }
+.result .defeat-recap strong { color: #ffdf9a; text-align: right; }
 .result button {
   margin-top: 14px;
   padding: 13px 30px;
@@ -838,6 +864,38 @@ button {
   background: #171a1a;
   color: #c7c1ae;
   border-color: #5b605a;
+}
+.campaign-difficulty {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 20px;
+}
+.campaign-difficulty > strong {
+  grid-column: 1 / -1;
+  color: #e7dec7;
+  font-size: 14px;
+}
+.campaign-cinematic .campaign-difficulty button {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 11px 12px;
+  border-color: #56605c;
+  background: #111716e8;
+  color: #d6d4c9;
+  text-align: left;
+}
+.campaign-cinematic .campaign-difficulty button.active {
+  border-color: #e0b84f;
+  background: #4a3719e8;
+  color: #fff0bd;
+  box-shadow: inset 0 0 0 1px #8c6a2d;
+}
+.campaign-difficulty button b { font-size: 13px; }
+.campaign-difficulty button small { color: #aeb9b3; font-size: 10px; line-height: 1.45; }
+@media (max-width: 720px) {
+  .campaign-difficulty { grid-template-columns: 1fr; }
 }
 .briefing-scientists {
   display: block;
@@ -1492,6 +1550,9 @@ button {
 .main-menu button.campaign {
   border-left-color: #9b814e;
 }
+.main-menu button.audio-start { min-height: 48px; border-left-color: #4d9ba0; background: linear-gradient(90deg,#102021e8,#080c0cf5); }
+.main-menu button.audio-start.ready { border-left-color: #6b755a; opacity: .78; }
+.main-menu button.audio-start span b { font-size: 13px; color: #9edee0; }
 .main-menu kbd {
   display: grid;
   place-items: center;
@@ -2441,6 +2502,271 @@ button {
   }
 }
 
+/* 2026-08 command surface: keep every persistent control outside the battlefield. */
+.underground-game {
+  height: 100dvh;
+  min-height: 620px;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  overflow: hidden;
+  background: #050708;
+  font-family: system-ui, "Noto Sans KR", "Malgun Gothic", sans-serif;
+}
+.underground-game > header {
+  position: relative;
+  z-index: 8;
+  height: auto;
+  min-height: 64px;
+  padding: 10px 18px;
+}
+.underground-game > header h1 { font-size: clamp(15px, 1.45vw, 23px); }
+.underground-game > header b { font-size: 13px; }
+.underground-game > header strong { font-size: 13px; }
+.underground-game > footer {
+  position: relative;
+  z-index: 8;
+  height: auto;
+  min-height: 36px;
+  padding: 8px 14px;
+  font-size: 13px;
+}
+.minefield {
+  position: relative !important;
+  inset: auto !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: auto !important;
+  height: auto !important;
+  min-height: 0;
+  transform: none !important;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  overflow: hidden;
+  box-shadow: none;
+}
+.battle-stage {
+  position: relative;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  background: #050708;
+}
+.battle-stage canvas {
+  width: auto;
+  height: 100%;
+  max-width: 100%;
+  aspect-ratio: 760 / 500;
+  object-fit: fill;
+}
+.battle-stage .minimap-hit { position: absolute; }
+.combat-command-dock {
+  position: relative;
+  z-index: 9;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 10px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  border-top: 2px solid #6d5730;
+  background: linear-gradient(180deg, #111718, #080b0c);
+  box-shadow: 0 -8px 22px #0009;
+  scrollbar-color: #8a713a #080b0c;
+}
+.combat-command-dock > .build-toggle,
+.combat-command-dock > .route-hotkeys,
+.combat-command-dock > aside,
+.combat-command-dock > .utilitybar,
+.combat-command-dock > .skillbar {
+  position: static;
+  inset: auto;
+  transform: none;
+  flex: 0 0 auto;
+  margin: 0;
+}
+.combat-command-dock > .build-toggle {
+  width: 142px;
+  height: auto;
+  min-height: 70px;
+  box-shadow: none;
+}
+.combat-command-dock > .build-toggle span b { font-size: 13px; }
+.combat-command-dock > .build-toggle span small { font-size: 12px; color: #d1c19c; }
+.combat-command-dock > .build-menu {
+  z-index: 12;
+  left: 182px !important;
+  top: auto !important;
+  bottom: calc(100% + 6px);
+  width: 260px;
+  max-height: min(58vh, 480px);
+  overflow-y: auto;
+}
+.combat-command-dock > .route-hotkeys {
+  width: 286px;
+  min-width: 286px;
+  padding: 8px;
+  box-shadow: none;
+}
+.combat-command-dock .route-hotkeys section { padding-bottom: 5px; }
+.combat-command-dock .route-hotkeys span b,
+.combat-command-dock .route-hotkeys button { font-size: 12px; }
+.combat-command-dock .route-hotkeys span small { font-size: 11px; }
+.combat-command-dock > aside {
+  display: flex;
+  gap: 6px;
+  order: -1;
+}
+.combat-command-dock > aside > div:not(.route-hotkeys) {
+  position: static;
+  min-width: 166px;
+  grid-template-columns: 42px 112px;
+  padding: 7px;
+}
+.combat-command-dock > aside > div:not(.hero-status) { min-width: 122px; grid-template-columns: 30px 82px; }
+.combat-command-dock aside b { font-size: 13px; }
+.combat-command-dock aside small { font-size: 11px; color: #c5c9c2; }
+.combat-command-dock > .utilitybar,
+.combat-command-dock > .skillbar {
+  display: flex;
+  gap: 5px;
+  padding: 5px;
+  border: 1px solid #3b4542;
+  background: #080c0d;
+}
+.combat-command-dock .utilitybar button { min-width: 118px; }
+.combat-command-dock .skillbar button { min-width: 132px; }
+.combat-command-dock .utilitybar b,
+.combat-command-dock .skillbar b { font-size: 13px; }
+.combat-command-dock .utilitybar small,
+.combat-command-dock .skillbar small { font-size: 11px; color: #c9cec8; }
+.combat-command-dock .utilitybar kbd,
+.combat-command-dock .skillbar kbd { font-size: 12px; }
+
+/* Roster is a viewport dialog with one reliable scroll owner and an always reachable start action. */
+.title-screen.roster-open { overflow: hidden; }
+.title-screen.roster-open .title-brand {
+  position: fixed;
+  z-index: 20;
+  inset: 70px max(18px, 4vw) 22px;
+  width: auto;
+  max-width: none;
+  top: 70px;
+  bottom: 22px;
+  height: calc(100dvh - 92px);
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  display: block;
+  align-self: auto;
+  justify-self: auto;
+  overflow: hidden;
+}
+.title-screen.roster-open .title-brand > .eyebrow,
+.title-screen.roster-open .title-brand > img,
+.title-screen.roster-open .title-brand > .tagline,
+.title-screen.roster-open .title-brand > footer { display: none; }
+.title-screen.roster-open .roster-panel {
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  padding: 18px 22px 96px;
+}
+.title-screen.roster-open .panel-heading {
+  position: sticky;
+  z-index: 3;
+  top: -18px;
+  padding: 14px 0;
+  background: #080b0bf2;
+  backdrop-filter: blur(8px);
+}
+.title-screen.roster-open .skirmish-start {
+  position: fixed;
+  z-index: 4;
+  left: calc(max(18px, 4vw) + 22px);
+  right: calc(max(18px, 4vw) + 22px);
+  bottom: 22px;
+  width: auto;
+  min-height: 54px;
+  font-size: 16px;
+  box-shadow: 0 -12px 28px #000;
+}
+.roster-grid span b { font-size: 15px; }
+.roster-grid span em { font-size: 12px; color: #b4b5aa; }
+.roster-grid span small { font-size: 12px; line-height: 1.42; color: #aeb8b1; }
+.roster-grid article > button { min-height: 42px; font-size: 12px; }
+.faction-tabs small,
+.battle-map-select small,
+.ally-select small { font-size: 12px; color: #b8c2be; }
+.skirmish-config button,
+.ally-select button { min-height: 42px; font-size: 13px; }
+.hero-detail-panel article small,
+.loadout-select button small,
+.hero-detail-panel header small,
+.hero-detail-panel header p,
+.loadout-select header small { font-size: 13px; color: #c2ccc9; }
+.hero-detail-panel article b,
+.loadout-select button b { font-size: 14px; }
+
+@media (max-width: 1180px) {
+  .combat-command-dock > aside > div:not(.hero-status) { display: none; }
+  .combat-command-dock > .route-hotkeys { width: 250px; min-width: 250px; }
+}
+@media (min-width: 1181px) {
+  .combat-command-dock {
+    display: grid;
+    grid-template-columns: 300px 286px minmax(520px, 1fr);
+    grid-template-rows: auto auto;
+    grid-template-areas:
+      "status routes utility"
+      "build routes skills";
+    align-items: stretch;
+    overflow: visible;
+  }
+  .combat-command-dock > aside { grid-area: status; }
+  .combat-command-dock > .build-toggle { grid-area: build; width: 100%; min-height: 48px; }
+  .combat-command-dock > .route-hotkeys { grid-area: routes; }
+  .combat-command-dock > .utilitybar { grid-area: utility; }
+  .combat-command-dock > .skillbar { grid-area: skills; }
+  .combat-command-dock > .utilitybar button,
+  .combat-command-dock > .skillbar button { flex: 1 1 0; min-width: 0; }
+}
+@media (max-width: 800px), (pointer: coarse) {
+  .underground-game { min-height: 520px; }
+  .underground-game > header { min-height: 58px; padding: 7px 9px; }
+  .underground-game > header h1 { width: 100%; order: 3; font-size: 13px; }
+  .battle-stage canvas { width: 100%; height: auto; max-height: 100%; }
+  .combat-command-dock { padding: 7px; }
+  .combat-command-dock > aside { display: none; }
+  .combat-command-dock > .route-hotkeys { transform: none; max-height: none; overflow: visible; }
+  .combat-command-dock > .skillbar,
+  .combat-command-dock > .utilitybar { display: flex; max-width: none; overflow: visible; }
+  .combat-command-dock .skillbar button,
+  .combat-command-dock .utilitybar button { min-width: 120px; min-height: 54px; }
+  .combat-command-dock > .mobile-pad {
+    position: static;
+    display: grid;
+    grid-template-columns: repeat(4, 44px);
+    width: auto;
+    height: auto;
+    gap: 4px;
+    flex: 0 0 auto;
+  }
+  .combat-command-dock > .mobile-pad button { position: static; width: 44px; height: 54px; }
+  .title-screen.roster-open .title-brand { inset: 12px; height: calc(100dvh - 24px); }
+  .title-screen.roster-open .roster-panel { padding: 12px 12px 88px; }
+  .title-screen.roster-open .skirmish-start { left: 24px; right: 24px; bottom: 12px; }
+  .roster-grid { grid-template-columns: 1fr; }
+  .hero-detail-panel > div,
+  .loadout-select > div { grid-template-columns: 1fr; }
+}
+
 /* CSS multiplication is not consistently supported in embedded browsers. Use equivalent vw/vh values. */
 .minefield {
   position: fixed !important;
@@ -2459,4 +2785,451 @@ button {
     height: 65.789vw !important;
     max-height: 100vh;
   }
+}
+
+/* Must remain after the legacy fixed-aspect fallback above. */
+.underground-game > .minefield {
+  position: relative !important;
+  inset: auto !important;
+  left: auto !important;
+  top: auto !important;
+  right: auto !important;
+  bottom: auto !important;
+  width: auto !important;
+  height: auto !important;
+  max-height: none;
+  transform: none !important;
+}
+
+/* Compact icon-first combat command dock. */
+.combat-command-dock {
+  gap: 6px;
+  padding: 6px 8px;
+}
+.combat-command-dock > aside {
+  width: 232px;
+  min-width: 232px;
+  gap: 4px;
+}
+.combat-command-dock > aside > div:not(.route-hotkeys) {
+  min-width: 158px;
+  min-height: 64px;
+  grid-template-columns: 38px 108px;
+  padding: 5px 6px;
+}
+.combat-command-dock > aside > div:not(.hero-status) {
+  display: grid;
+  min-width: 70px;
+  grid-template-columns: 22px 1fr;
+  align-content: center;
+  padding: 5px;
+}
+.combat-command-dock > aside > div:not(.hero-status) b { font-size: 11px; }
+.combat-command-dock > aside > div:not(.hero-status) small { display: none; }
+.combat-command-dock > .build-toggle {
+  width: 68px;
+  min-width: 68px;
+  min-height: 64px;
+  padding: 5px;
+  display: grid;
+  place-items: center;
+  gap: 2px;
+  text-align: center;
+}
+.combat-command-dock > .build-toggle kbd { width: 27px; height: 27px; font-size: 16px; }
+.combat-command-dock > .build-toggle span b { display: block; max-width: 58px; font-size: 11px; line-height: 1.2; }
+.combat-command-dock > .build-menu { left: 76px !important; }
+.combat-command-dock > .route-hotkeys {
+  width: 228px;
+  min-width: 228px;
+  padding: 5px 6px;
+  gap: 3px;
+}
+.combat-command-dock .route-hotkeys section {
+  grid-template-columns: 45px minmax(0, 1fr);
+  gap: 2px 6px;
+  padding-bottom: 3px;
+}
+.combat-command-dock .route-hotkeys kbd { width: 45px; height: 22px; font-size: 10px; }
+.combat-command-dock .route-hotkeys span b { font-size: 11px; }
+.combat-command-dock .route-hotkeys span small { font-size: 10px; line-height: 1.2; }
+.combat-command-dock .route-hotkeys section > div { gap: 2px; }
+.combat-command-dock .route-hotkeys button { min-height: 23px; padding: 2px; font-size: 10px; }
+.combat-command-dock > .utilitybar,
+.combat-command-dock > .skillbar {
+  gap: 4px;
+  padding: 4px;
+  overflow: visible;
+}
+.combat-command-dock .utilitybar button.icon-command,
+.combat-command-dock .skillbar button.icon-command {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 58px;
+  min-width: 58px;
+  height: 62px;
+  min-height: 62px;
+  padding: 4px;
+  overflow: visible;
+  border: 1px solid #384b48;
+  background: #111718;
+}
+.command-icon { width: 42px; height: 42px; display: block; }
+.icon-command > kbd {
+  position: absolute;
+  left: 3px;
+  top: 3px;
+  z-index: 2;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 3px;
+  display: grid;
+  place-items: center;
+  border: 1px solid #88713a;
+  background: #080b0ce8;
+  color: #ffe49a;
+  font: 900 10px/1 monospace;
+}
+.icon-command > .command-state {
+  position: absolute;
+  right: 3px;
+  bottom: 3px;
+  z-index: 2;
+  max-width: 48px;
+  padding: 2px 3px;
+  background: #050808df;
+  color: #dce7e2;
+  font: 800 9px/1 monospace;
+  white-space: nowrap;
+}
+.icon-command.ultimate-command { border-color: #9d7932 !important; }
+.icon-command.empty .command-icon { opacity: .35; filter: grayscale(1); }
+.icon-command::after {
+  content: attr(data-tooltip);
+  position: absolute;
+  z-index: 40;
+  left: 50%;
+  bottom: calc(100% + 9px);
+  width: max-content;
+  max-width: 270px;
+  padding: 8px 10px;
+  transform: translate(-50%, 4px);
+  border: 1px solid #87713d;
+  background: #080c0df7;
+  color: #f1ead5;
+  box-shadow: 0 8px 24px #000c;
+  font: 700 12px/1.45 "Malgun Gothic", sans-serif;
+  white-space: normal;
+  text-align: left;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity .12s ease, transform .12s ease;
+}
+.icon-command:hover::after,
+.icon-command:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+@media (min-width: 1100px) {
+  .combat-command-dock {
+    display: grid;
+    grid-template-columns: 232px 68px 228px 248px 248px;
+    grid-template-rows: 64px;
+    grid-template-areas: "status build routes utility skills";
+    justify-content: center;
+    align-items: stretch;
+    overflow: visible;
+  }
+  .combat-command-dock > aside { grid-area: status; }
+  .combat-command-dock > .build-toggle { grid-area: build; }
+  .combat-command-dock > .route-hotkeys { grid-area: routes; }
+  .combat-command-dock > .utilitybar { grid-area: utility; }
+  .combat-command-dock > .skillbar { grid-area: skills; }
+}
+@media (max-width: 1099px) {
+  .combat-command-dock { min-height: 76px; overflow-x: auto; overflow-y: hidden; }
+  .combat-command-dock > aside { display: none; }
+  .combat-command-dock > .route-hotkeys { transform: none; max-height: none; overflow: visible; }
+  .combat-command-dock .skillbar button.icon-command,
+  .combat-command-dock .utilitybar button.icon-command { min-width: 58px; width: 58px; min-height: 62px; height: 62px; }
+}
+
+/* Route/status visibility correction and collapsible minimap. */
+.battle-stage .minimap-hit {
+  top: 75.2%;
+}
+.battle-stage .minimap-hit[hidden] { display: none; }
+.minimap-toggle {
+  position: absolute;
+  z-index: 8;
+  right: 2.1%;
+  top: 71.1%;
+  min-width: 50px;
+  min-height: 23px;
+  padding: 3px 6px;
+  border: 1px solid #9a7b45;
+  background: #080c0df2;
+  color: #e5c677;
+  font: 800 10px/1.2 "Malgun Gothic", sans-serif;
+  cursor: pointer;
+  box-shadow: 0 3px 10px #000a;
+}
+.minimap-toggle:hover,
+.minimap-toggle:focus-visible { border-color: #e6c664; color: #fff0b0; }
+.minimap-toggle span { margin-right: 3px; }
+.minimap-toggle.collapsed {
+  top: auto;
+  right: 1.6%;
+  bottom: 2.2%;
+  min-width: 92px;
+  min-height: 32px;
+}
+.combat-command-dock > aside {
+  width: 278px;
+  min-width: 278px;
+  justify-content: flex-start;
+}
+.combat-command-dock > aside > div.hero-status {
+  display: grid;
+  width: 190px;
+  min-width: 190px;
+  height: 64px;
+  min-height: 64px;
+  grid-template-columns: 34px 142px;
+  grid-template-rows: 17px 13px 16px;
+  gap: 2px 6px;
+  padding: 5px;
+  overflow: hidden;
+}
+.combat-command-dock .hero-status > .hero-face {
+  width: 34px;
+  height: 34px;
+  margin: 0;
+}
+.combat-command-dock .hero-status > b { font-size: 12px; line-height: 17px; white-space: nowrap; }
+.combat-command-dock .hero-status > .hero-health { height: 13px; }
+.combat-command-dock .hero-status > .hero-health strong { font-size: 8px; }
+.combat-command-dock .hero-status > small {
+  display: block;
+  margin: 0;
+  overflow: hidden;
+  color: #c7d0ca;
+  font-size: 10px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+.combat-command-dock > aside > div:not(.hero-status) {
+  width: 84px;
+  min-width: 84px;
+  height: 64px;
+  min-height: 64px;
+  grid-template-columns: 20px minmax(0, 1fr);
+  grid-template-rows: 24px 28px;
+  gap: 2px 3px;
+  padding: 5px;
+  overflow: hidden;
+}
+.combat-command-dock > aside > div:not(.hero-status) kbd { width: 20px; height: 20px; }
+.combat-command-dock > aside > div:not(.hero-status) b { font-size: 10px; line-height: 1.1; }
+.combat-command-dock > aside > div:not(.hero-status) small {
+  display: block;
+  grid-column: 1 / -1;
+  color: #abb8b2;
+  font-size: 9px;
+  line-height: 1.25;
+}
+.combat-command-dock > .route-hotkeys {
+  width: 330px;
+  min-width: 330px;
+  height: 64px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px;
+  overflow: hidden;
+}
+.combat-command-dock .route-hotkeys section {
+  min-width: 0;
+  height: 54px;
+  grid-template-columns: 45px minmax(0, 1fr);
+  grid-template-rows: 22px 27px;
+  gap: 3px 5px;
+  padding: 0 5px 0 0;
+  border: 0;
+  border-right: 1px solid #34423f;
+}
+.combat-command-dock .route-hotkeys section:last-child { padding-right: 0; border-right: 0; }
+.combat-command-dock .route-hotkeys section > span { min-width: 0; }
+.combat-command-dock .route-hotkeys section > span b { line-height: 22px; }
+.combat-command-dock .route-hotkeys section > span small { display: none; }
+.combat-command-dock .route-hotkeys section > div { grid-column: 1 / -1; min-width: 0; }
+.combat-command-dock .route-hotkeys button { min-width: 0; min-height: 27px; }
+@media (min-width: 1240px) {
+  .combat-command-dock {
+    display: grid;
+    grid-template-columns: 278px 68px 330px 248px 248px;
+    grid-template-rows: 64px;
+    grid-template-areas: "status build routes utility skills";
+    justify-content: start;
+    align-items: stretch;
+    overflow: visible;
+  }
+}
+@media (min-width: 1100px) and (max-width: 1239px) {
+  .combat-command-dock {
+    display: flex;
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+  }
+}
+@media (max-width: 1099px) {
+  .combat-command-dock > .route-hotkeys { width: 330px; min-width: 330px; }
+}
+
+/* 1195px work-area fit: one screen, two route rows, no detached resource card. */
+.combat-command-dock {
+  gap: 4px;
+  padding: 4px 6px;
+}
+.combat-command-dock > aside {
+  width: 200px;
+  min-width: 200px;
+  gap: 0;
+}
+.combat-command-dock > aside > div.hero-status {
+  width: 200px;
+  min-width: 200px;
+  height: 60px;
+  min-height: 60px;
+  grid-template-columns: 34px 154px;
+  grid-template-rows: 15px 12px 13px 13px;
+  gap: 1px 5px;
+  padding: 4px;
+}
+.combat-command-dock .hero-status > .hero-face { grid-row: 1 / 5; }
+.combat-command-dock .hero-status > b { font-size: 11px; line-height: 15px; }
+.combat-command-dock .hero-status > .hero-health { height: 12px; }
+.combat-command-dock .hero-status > small {
+  font-size: 9px;
+  line-height: 13px;
+}
+.combat-command-dock .hero-status > .hero-resources { color: #d9c177; }
+.combat-command-dock > .build-toggle {
+  width: 52px;
+  min-width: 52px;
+  height: 60px;
+  min-height: 60px;
+  padding: 3px;
+}
+.combat-command-dock > .build-toggle kbd { width: 24px; height: 24px; font-size: 14px; }
+.combat-command-dock > .build-toggle span b { max-width: 46px; font-size: 10px; }
+.combat-command-dock > .build-menu {
+  position: absolute;
+  z-index: 60;
+  left: 210px !important;
+  top: auto !important;
+  bottom: calc(100% + 5px);
+  width: 240px;
+  display: grid;
+}
+.combat-command-dock > .route-hotkeys {
+  width: 236px;
+  min-width: 236px;
+  height: 60px;
+  padding: 3px 4px;
+  display: grid;
+  grid-template-columns: 1fr;
+  grid-template-rows: repeat(2, 25px);
+  gap: 3px;
+  overflow: hidden;
+}
+.combat-command-dock .route-hotkeys section,
+.combat-command-dock .route-hotkeys section:last-child {
+  width: 100%;
+  height: 25px;
+  display: grid;
+  grid-template-columns: 55px minmax(0, 1fr);
+  grid-template-rows: 25px;
+  gap: 4px;
+  padding: 0;
+  border: 0;
+}
+.combat-command-dock .route-hotkeys kbd {
+  width: 55px;
+  height: 25px;
+  font-size: 9px;
+}
+.combat-command-dock .route-hotkeys section > div {
+  grid-column: 2;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+}
+.combat-command-dock .route-hotkeys button {
+  min-height: 25px;
+  height: 25px;
+  padding: 1px;
+  font-size: 9px;
+}
+.combat-command-dock > .utilitybar,
+.combat-command-dock > .skillbar {
+  width: 194px;
+  min-width: 194px;
+  height: 60px;
+  gap: 3px;
+  padding: 2px 3px;
+}
+.combat-command-dock .utilitybar button.icon-command,
+.combat-command-dock .skillbar button.icon-command {
+  width: 44px;
+  min-width: 44px;
+  height: 56px;
+  min-height: 56px;
+  padding: 2px;
+}
+.combat-command-dock .command-icon { width: 32px; height: 32px; }
+.icon-command > kbd {
+  left: 2px;
+  top: 2px;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 2px;
+  font-size: 9px;
+}
+.icon-command > .command-state {
+  left: 50%;
+  right: auto;
+  bottom: 2px;
+  max-width: 40px;
+  padding: 1px 2px;
+  transform: translateX(-50%);
+  font-size: 8px;
+  text-align: center;
+}
+.combat-command-dock .skillbar .icon-command:last-child::after {
+  left: auto;
+  right: 0;
+  transform: translateY(4px);
+}
+.combat-command-dock .skillbar .icon-command:last-child:hover::after,
+.combat-command-dock .skillbar .icon-command:last-child:focus-visible::after {
+  transform: translateY(0);
+}
+@media (min-width: 1120px) {
+  .combat-command-dock {
+    display: grid;
+    grid-template-columns: 200px 52px 236px 194px 194px;
+    grid-template-rows: 60px;
+    grid-template-areas: "status build routes utility skills";
+    justify-content: start;
+    align-items: stretch;
+    overflow: visible;
+  }
+  .combat-command-dock > aside { display: flex; grid-area: status; }
+  .combat-command-dock > .build-toggle { grid-area: build; }
+  .combat-command-dock > .route-hotkeys { grid-area: routes; }
+  .combat-command-dock > .utilitybar { grid-area: utility; }
+  .combat-command-dock > .skillbar { grid-area: skills; }
 }

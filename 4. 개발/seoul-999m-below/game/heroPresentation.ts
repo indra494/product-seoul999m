@@ -39,6 +39,8 @@ const HERO_SIDE_FRAME_SOURCE_FACING_X: Partial<Record<string, readonly [-1 | 1, 
   "ahn-seona": [-1, -1, -1, -1, -1, -1],
   "kang-ryeokhan": [1, 1, 1, 1, 1, 1],
   r486: [-1, -1, -1, -1, -1, -1],
+  // C-999 전용 시트는 대기 프레임은 왼쪽, 실제 이동에 쓰는 1번 프레임은 오른쪽 원본이다.
+  c999: [-1, 1, -1, -1, 1, -1],
 };
 
 const HERO_BASIC_FRAMES: Partial<Record<string, readonly [number, number]>> = {

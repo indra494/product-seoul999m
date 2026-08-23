@@ -8,7 +8,7 @@ import {
 export type Team = "blue" | "red";
 export type Role = "hero" | "minion" | "scientist";
 export type RouteId = "A" | "B";
-export type CampaignController = "arena" | "companion";
+export type CampaignController = "arena" | "companion" | "battle";
 
 export type Unit = {
   id: number;
@@ -58,7 +58,13 @@ export type Unit = {
   arenaFacingX?: -1 | 1;
   arenaLastAttackerId?: number;
   arenaThreatUntil?: number;
+  arenaPushImmuneUntil?: number;
+  campaignGuard?: "pyeongtaek";
+  campaignActivated?: boolean;
   campaignScout?: boolean;
+  campaignAdvanceX?: number;
+  campaignAdvanceStallMs?: number;
+  campaignRegroups?: number;
   level: number;
   shieldDamage?: number;
   minionVisual?: "idle" | "move" | "attack" | "hurt" | "down";
@@ -74,6 +80,7 @@ export type Unit = {
   routeResumeIndex?: number;
   formationSide?: -1 | 0 | 1;
   aiCooldowns?: [number, number, number, number];
+  aiComboLockUntil?: number;
   aiPreviousAction?: string;
   aiTargetId?: number;
   aiDecisionReason?: string;
@@ -82,6 +89,7 @@ export type Unit = {
   onlinePlayerId?: string;
   networkController?: "remote" | "ai";
   remoteGoal?: { x: number; y: number };
+  lastDamagedAt?: number;
 };
 
 export type Turret = {
