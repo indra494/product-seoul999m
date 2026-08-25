@@ -6,15 +6,24 @@ import { HEROES } from "../game/content";
 import {
   roomCanStart,
   roomCapacity,
+  isOnlineRouteAllocation,
+  onlineRoomRuleset,
   type OnlineRoomPlayer,
   type OnlineRoomState,
   type OnlineRoomView,
   type OnlineBattleSnapshot,
+  type OnlineRouteAllocation,
   opponentTeam,
   type RoomCreateRequest,
   type RoomJoinRequest,
 } from "../game/onlineRoom";
 import type { TacticalRole } from "../game/tacticalSupport";
+import {
+  SECRET_TUNNEL_MATCH_MS,
+  SECRET_TUNNEL_PREPARE_MS,
+} from "../game/secretTunnelRules";
+
+const ONLINE_ADJUDICATION_GRACE_MS = 750;
 
 interface Env {
   ASSETS: Fetcher;
@@ -40,16 +49,21 @@ type RoomActionBody = {
   token?: string;
   action: string;
   command?: {
-    type: "move" | "attack" | "skill" | "drill" | "route" | "build" | "fill" | "tactical" | "research";
+    type: "move" | "attack" | "skill" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
     x?: number;
     y?: number;
+    dx?: number;
+    dy?: number;
+    drillWidthBonus?: number;
+    drillCooldownMultiplier?: number;
     slot?: 1 | 2 | 4;
     route?: "A" | "B";
+    allocation?: OnlineRouteAllocation;
     kind?: string;
     tacticalRole?: TacticalRole;
   };
   snapshot?: Omit<OnlineBattleSnapshot, "sequence" | "issuedAt">;
-  winner?: "blue" | "red";
+  winner?: "blue" | "red" | "draw";
 };
 
 const responseJson = (value: unknown, status = 200) =>
@@ -68,8 +82,139 @@ const randomCode = () => {
 
 const randomToken = () => crypto.randomUUID().replaceAll("-", "");
 
-const publicRoom = (room: OnlineRoomState): OnlineRoomView => ({
+type RoomViewer = Pick<OnlineRoomPlayer, "id" | "team">;
+
+const snapshotForTeam = (
+  room: OnlineRoomState,
+  viewer?: RoomViewer,
+): OnlineBattleSnapshot | undefined => {
+  const snapshot = room.snapshot;
+  if (!snapshot || onlineRoomRuleset(room) === "open-front" || viewer?.id === room.hostId)
+    return snapshot;
+
+  const viewerTeam = viewer?.team,
+    tunnelCells = new Map(snapshot.tunnelAccess?.map((cell) => [`${cell.x},${cell.y}`, cell]) ?? []),
+    playerTeams = new Map(room.players.map((player) => [player.id, player.team])),
+    viewerObservers = viewerTeam
+      ? [
+          ...snapshot.heroes
+            .filter((hero) => playerTeams.get(hero.playerId) === viewerTeam && hero.alive)
+            .map((hero) => ({
+              x: hero.x,
+              y: hero.y,
+              radius: hero.playerId === viewer?.id
+                ? HEROES.find((definition) => definition.id === room.players.find((player) => player.id === hero.playerId)?.heroId)?.stats.vision ?? 7
+                : 7,
+            })),
+          ...snapshot.minions
+            .filter((minion) => minion.team === viewerTeam && minion.alive)
+            .map((minion) => ({ x: minion.x, y: minion.y, radius: 4 })),
+          ...snapshot.installations
+            .filter((installation) => installation.team === viewerTeam && installation.hp > 0)
+            .map((installation) => ({ x: installation.x, y: installation.y, radius: 7 })),
+        ]
+      : [],
+    viewerCanAccess = (x: number, y: number) => {
+      if (!viewerTeam) return false;
+      const cell = tunnelCells.get(`${x},${y}`);
+      return Boolean(cell && (cell.accessMask & (viewerTeam === "blue" ? 1 : 2)) !== 0);
+    },
+    visibleEnemyPosition = (x: number, y: number) =>
+      snapshot.phase !== "prepare" &&
+      viewerCanAccess(x, y) &&
+      viewerObservers.some((observer) =>
+        (observer.x - x) ** 2 + (observer.y - y) ** 2 <= observer.radius ** 2,
+      );
+  const viewerAccessMask = viewerTeam === "blue" ? 1 : viewerTeam === "red" ? 2 : 0,
+    opponentAccessMask = viewerTeam === "blue" ? 2 : viewerTeam === "red" ? 1 : 0,
+    ownPlayerIds = new Set(
+      viewerTeam
+        ? room.players.filter((player) => player.team === viewerTeam).map((player) => player.id)
+        : [],
+    );
+  return {
+    ...snapshot,
+    // 준비 단계에는 상대 영웅의 위치와 상태를 방 응답/소켓에 싣지 않는다.
+    // 거점 HP/방어막은 snapshot의 allyCore/enemyCore에 그대로 남는다.
+    heroes: snapshot.heroes.filter((hero) =>
+      ownPlayerIds.has(hero.playerId) ||
+      (playerTeams.get(hero.playerId) !== viewerTeam && visibleEnemyPosition(hero.x, hero.y)),
+    ),
+    minions: snapshot.minions.filter((minion) =>
+      minion.team === viewerTeam || visibleEnemyPosition(minion.x, minion.y),
+    ),
+    installations: snapshot.installations.filter((installation) =>
+      installation.team === viewerTeam || visibleEnemyPosition(installation.x, installation.y),
+    ),
+    terrain: snapshot.terrain.filter((tile) =>
+      tile.filledBy === undefined || tile.filledBy === viewerTeam,
+    ),
+    // 상대 비밀망 없이도 자기 팀의 준비 성공 여부는 호스트 판정을 따른다.
+    // 상대 팀 판정과 비인증 뷰의 판정값은 전송하지 않는다.
+    teamConnections: viewerTeam && snapshot.teamConnections?.[viewerTeam] !== undefined
+      ? { [viewerTeam]: snapshot.teamConnections[viewerTeam] }
+      : undefined,
+    teamRouteAllocations: viewerTeam && snapshot.teamRouteAllocations?.[viewerTeam]
+      ? { [viewerTeam]: snapshot.teamRouteAllocations[viewerTeam] }
+      : undefined,
+    // 상대 전용 굴은 전투 단계가 바뀐 뒤에도 비공개다. 부분 굴착 수치와
+    // 굴착 주체도 뷰어 팀 키만 남긴다. 팀을 식별할 수 없는 비인증
+    // 뷰에는 공유 간선(3)의 형상만 노출한다.
+    tunnelAccess: snapshot.tunnelAccess
+      ?.filter((cell) => {
+        if (!viewerTeam) return cell.accessMask === 3;
+        const opponent = viewerTeam === "blue" ? "red" : "blue",
+          ownDurability = cell.durability?.[viewerTeam],
+          ownMaximum = cell.maxDurability?.[viewerTeam],
+          opponentDurability = cell.durability?.[opponent],
+          opponentMaximum = cell.maxDurability?.[opponent],
+          ownHasProgress = ownDurability !== undefined && ownMaximum !== undefined && ownDurability < ownMaximum,
+          opponentHasProgress = opponentDurability !== undefined && opponentMaximum !== undefined && opponentDurability < opponentMaximum;
+        if (cell.accessMask === opponentAccessMask) return ownHasProgress;
+        if (cell.accessMask !== 0) return true;
+        // 아직 열린 팀이 없는 셀은 내 부분 굴착 진행이 있을 때만 보낸다.
+        return ownHasProgress && (!opponentHasProgress || ownHasProgress);
+      })
+      .map((cell) => {
+        const { durability, maxDurability, excavatedBy, owner, ...geometry } = cell,
+          ownDurability = viewerTeam && durability?.[viewerTeam] !== undefined
+            ? { [viewerTeam]: durability[viewerTeam] }
+            : undefined,
+          ownMaxDurability = viewerTeam && maxDurability?.[viewerTeam] !== undefined
+            ? { [viewerTeam]: maxDurability[viewerTeam] }
+            : undefined,
+          ownExcavatedBy = excavatedBy === undefined || !viewerTeam
+            ? undefined
+            : (excavatedBy & viewerAccessMask) as 0 | 1 | 2 | 3,
+          ownOwner = viewerTeam && owner === viewerTeam ? owner : undefined;
+        return {
+          ...geometry,
+          accessMask: geometry.accessMask === opponentAccessMask ? 0 : geometry.accessMask,
+          sharedBackbone: geometry.accessMask === opponentAccessMask ? false : geometry.sharedBackbone,
+          ...(ownDurability ? { durability: ownDurability } : {}),
+          ...(ownMaxDurability ? { maxDurability: ownMaxDurability } : {}),
+          ...(ownExcavatedBy !== undefined ? { excavatedBy: ownExcavatedBy } : {}),
+          ...(ownOwner ? { owner: ownOwner } : {}),
+        };
+      }),
+  };
+};
+
+const commandsForViewer = (room: OnlineRoomState, viewer?: RoomViewer) => {
+  if (onlineRoomRuleset(room) === "open-front" || viewer?.id === room.hostId)
+    return room.commands;
+  if (!viewer) return [];
+  const teammateIds = new Set(
+    room.players.filter((player) => player.team === viewer.team).map((player) => player.id),
+  );
+  return room.commands.filter((command) => teammateIds.has(command.playerId));
+};
+
+const publicRoom = (room: OnlineRoomState, viewer?: RoomViewer): OnlineRoomView => ({
   ...room,
+  ruleset: onlineRoomRuleset(room),
+  commands: commandsForViewer(room, viewer),
+  snapshot: snapshotForTeam(room, viewer),
   players: room.players.map((player) => ({
     id: player.id,
     nickname: player.nickname,
@@ -102,8 +247,10 @@ export class RoomHub extends DurableObject<Env> {
   }
 
   private broadcast(room: OnlineRoomState) {
-    const message = JSON.stringify({ type: "room", room: publicRoom(room) });
     for (const socket of this.roomState.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as { playerId?: string } | null,
+        viewer = room.players.find((player) => player.id === attachment?.playerId),
+        message = JSON.stringify({ type: "room", room: publicRoom(room, viewer) });
       try { socket.send(message); } catch { /* 닫히는 중인 연결은 close 핸들러가 정리한다. */ }
     }
   }
@@ -127,9 +274,13 @@ export class RoomHub extends DurableObject<Env> {
   private scheduleRoomAlarm(room: OnlineRoomState, now: number) {
     const deadlines: number[] = [];
     if (room.status === "countdown" && room.countdownAt) deadlines.push(room.countdownAt);
-    if (room.status === "playing")
+    if (room.status === "playing") {
+      if (!room.secretPreparationResolved && room.preparationEndsAt)
+        deadlines.push(room.preparationEndsAt + ONLINE_ADJUDICATION_GRACE_MS);
+      if (room.matchEndsAt) deadlines.push(room.matchEndsAt + ONLINE_ADJUDICATION_GRACE_MS);
       for (const player of room.players)
         if (!player.connected) deadlines.push(player.lastSeen + 10_000);
+    }
     if (deadlines.length) void this.roomState.storage.setAlarm(Math.max(now + 100, Math.min(...deadlines)));
   }
 
@@ -155,12 +306,47 @@ export class RoomHub extends DurableObject<Env> {
       if (!roomCanStart(room)) return { error: "모든 슬롯과 준비 상태를 확인하세요.", status: 409 };
       room.status = "countdown";
       room.countdownAt = now + 3000;
+      if (onlineRoomRuleset(room) === "secret-tunnel") {
+        room.preparationEndsAt = room.countdownAt + SECRET_TUNNEL_PREPARE_MS;
+        room.matchEndsAt = room.countdownAt + SECRET_TUNNEL_MATCH_MS;
+        room.secretPreparationResolved = false;
+      } else {
+        room.preparationEndsAt = undefined;
+        room.matchEndsAt = undefined;
+        room.secretPreparationResolved = undefined;
+      }
     } else if (body.action === "command") {
       if (room.status !== "playing" || !body.command)
         return { error: "진행 중인 전투 명령만 전송할 수 있습니다.", status: 409 };
       const command = body.command;
-      if (!( ["move", "attack", "skill", "drill", "route", "build", "fill", "tactical", "research"] as string[]).includes(command.type))
+      if (!( ["move", "attack", "skill", "drill", "survival", "route", "allocation", "build", "upgrade", "demolish", "fill", "tactical", "research", "elite"] as string[]).includes(command.type))
         return { error: "잘못된 전투 명령입니다.", status: 400 };
+      if (
+        command.type === "move" &&
+        (command.x === undefined || command.y === undefined) &&
+        (
+          ![-1, 0, 1].includes(command.dx ?? 0) ||
+          ![-1, 0, 1].includes(command.dy ?? 0) ||
+          ((command.dx ?? 0) === 0 && (command.dy ?? 0) === 0)
+        )
+      )
+        return { error: "잘못된 이동 명령입니다.", status: 400 };
+      if (
+        command.type === "allocation" &&
+        !isOnlineRouteAllocation(command.allocation)
+      )
+        return { error: "잘못된 공격로 배분입니다.", status: 400 };
+      if (
+        command.type === "drill" &&
+        (
+          ![-1, 0, 1].includes(command.dx ?? 0) ||
+          ![-1, 0, 1].includes(command.dy ?? 0) ||
+          (command.dx ?? 0) === 0 && (command.dy ?? 0) === 0 ||
+          ![0, 1].includes(command.drillWidthBonus ?? 0) ||
+          ![0.68, 1].includes(command.drillCooldownMultiplier ?? 1)
+        )
+      )
+        return { error: "잘못된 굴착 명령입니다.", status: 400 };
       room.commands.push({ ...command, sequence: ++room.commandSequence, playerId: player.id, issuedAt: now });
       if (room.commands.length > 96) room.commands.splice(0, room.commands.length - 96);
     } else if (body.action === "snapshot") {
@@ -168,7 +354,12 @@ export class RoomHub extends DurableObject<Env> {
         return { error: "방장 전투 상태만 동기화할 수 있습니다.", status: 403 };
       room.snapshot = { ...body.snapshot, sequence: (room.snapshot?.sequence ?? 0) + 1, issuedAt: now };
     } else if (body.action === "finish") {
-      if (room.status !== "playing" || player.id !== room.hostId || !body.winner)
+      if (
+        room.status !== "playing" ||
+        player.id !== room.hostId ||
+        !body.winner ||
+        !(["blue", "red", "draw"] as const).includes(body.winner)
+      )
         return { error: "방장만 전투 결과를 확정할 수 있습니다.", status: 403 };
       room.status = "finished";
       room.winner = body.winner;
@@ -182,6 +373,9 @@ export class RoomHub extends DurableObject<Env> {
       room.finishReason = undefined;
       room.departedPlayerId = undefined;
       room.countdownAt = undefined;
+      room.preparationEndsAt = undefined;
+      room.matchEndsAt = undefined;
+      room.secretPreparationResolved = undefined;
       room.seed = crypto.getRandomValues(new Uint32Array(1))[0];
       room.commandSequence = 0;
       room.commands = [];
@@ -232,6 +426,40 @@ export class RoomHub extends DurableObject<Env> {
         room.finishReason = "player-left";
         room.departedPlayerId = departed.id;
       }
+      if (
+        room.status === "playing" &&
+        !room.secretPreparationResolved &&
+        room.preparationEndsAt &&
+        now >= room.preparationEndsAt + ONLINE_ADJUDICATION_GRACE_MS
+      ) {
+        room.secretPreparationResolved = true;
+        const blueConnected = room.snapshot?.teamConnections?.blue === true,
+          redConnected = room.snapshot?.teamConnections?.red === true;
+        if (!blueConnected || !redConnected) {
+          room.status = "finished";
+          room.winner = blueConnected ? "blue" : redConnected ? "red" : "draw";
+          room.finishReason = "connection-failed";
+        }
+      }
+      if (
+        room.status === "playing" &&
+        room.matchEndsAt &&
+        now >= room.matchEndsAt + ONLINE_ADJUDICATION_GRACE_MS
+      ) {
+        const blueCore = room.snapshot?.allyCore,
+          redCore = room.snapshot?.enemyCore,
+          blueHp = blueCore?.hp ?? 600,
+          redHp = redCore?.hp ?? 600,
+          blueShield = blueCore?.shield ?? 180,
+          redShield = redCore?.shield ?? 180;
+        room.status = "finished";
+        room.winner = blueHp !== redHp
+          ? blueHp > redHp ? "blue" : "red"
+          : blueShield !== redShield
+            ? blueShield > redShield ? "blue" : "red"
+            : "draw";
+        room.finishReason = "timeout";
+      }
     }
     await this.save(room);
     this.scheduleRoomAlarm(room, now);
@@ -249,12 +477,13 @@ export class RoomHub extends DurableObject<Env> {
         ready: false, connected: true, lastSeen: now, aiControlled: false,
       };
       const room: OnlineRoomState = {
-        code: body.code, revision: 0, hostId: playerId, teamSize: body.teamSize,
+        code: body.code, revision: 0, hostId: playerId,
+        ruleset: onlineRoomRuleset({ ruleset: body.ruleset }), teamSize: body.teamSize,
         mapId: body.mapId, status: "lobby", seed: crypto.getRandomValues(new Uint32Array(1))[0],
         players: [player], createdAt: now, updatedAt: now, commandSequence: 0, commands: [],
       };
       await this.save(room);
-      return responseJson({ room: publicRoom(room), identity: { playerId, token } }, 201);
+      return responseJson({ room: publicRoom(room, player), identity: { playerId, token } }, 201);
     }
     const room = await this.load();
     if (!room) return responseJson({ error: "방을 찾을 수 없습니다." }, 404);
@@ -281,7 +510,7 @@ export class RoomHub extends DurableObject<Env> {
         reconnect.aiControlled = false;
         reconnect.lastSeen = now;
         await this.save(room);
-        return responseJson({ room: publicRoom(room), identity: { playerId: reconnect.id, token: reconnect.token } });
+        return responseJson({ room: publicRoom(room, reconnect), identity: { playerId: reconnect.id, token: reconnect.token } });
       }
       if (room.status !== "lobby") return responseJson({ error: "이미 시작된 방입니다." }, 409);
       if (room.players.length >= roomCapacity(room.teamSize)) return responseJson({ error: "방이 가득 찼습니다." }, 409);
@@ -300,7 +529,8 @@ export class RoomHub extends DurableObject<Env> {
         connected: true, lastSeen: now, aiControlled: false,
       });
       await this.save(room);
-      return responseJson({ room: publicRoom(room), identity: { playerId, token } }, 201);
+      const joined = room.players.find((player) => player.id === playerId);
+      return responseJson({ room: publicRoom(room, joined), identity: { playerId, token } }, 201);
     }
       if (method === "GET") {
       const playerId = url.searchParams.get("playerId"), token = url.searchParams.get("token"),
@@ -323,7 +553,7 @@ export class RoomHub extends DurableObject<Env> {
       if (room.status === "countdown" && room.countdownAt && now >= room.countdownAt)
         room.status = "playing";
       await this.save(room);
-      return responseJson({ room: publicRoom(room) });
+      return responseJson({ room: publicRoom(room, player) });
     }
     if (method === "PATCH") {
       const body = await request.json<RoomActionBody & { playerId: string; token: string }>();
@@ -331,7 +561,7 @@ export class RoomHub extends DurableObject<Env> {
       if (!player) return responseJson({ error: "방 참가 인증이 만료되었습니다." }, 403);
       const result = await this.applyAction(room, player, body, now);
       if (result.error) return responseJson({ error: result.error }, result.status ?? 400);
-      return responseJson({ room: publicRoom(room) });
+      return responseJson({ room: publicRoom(room, player) });
     }
     return responseJson({ error: "지원하지 않는 요청입니다." }, 405);
   }

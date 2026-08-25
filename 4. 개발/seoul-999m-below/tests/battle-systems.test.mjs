@@ -22,6 +22,7 @@ import { ELITE_RECOVERY_SCALE, ELITE_TACTICAL_EFFECT_SCALE, TACTICAL_RECOVERY_FR
 import { AUTONOMOUS_FRONTIER_REPLAN_MS, MINION_ENGAGEMENT_RADIUS, MINION_PURSUIT_DISTANCE, MINION_TARGET_MEMORY_MS, computerWaveFormation, frontLineScreenGoal, minionExplorationCohort, retainCoreDiscovery, skirmishHeroAggroRadius, skirmishHeroShouldPursue, teamHasSpottedCore, triangulateCoreAfterTimeout } from "../game/skirmishAi.ts";
 import { ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, REINFORCEMENT_MINION_CAP, canReserveElite, createEliteDeploymentState, reinforcementFormation, withReservedElite } from "../game/eliteMinions.ts";
 import { COMPUTER_CREDIT_MULTIPLIER, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, INSTALLATION_REWARD_RATE, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS, creditedAmount, installationKillCredits } from "../game/skirmishEconomy.ts";
+import { SECRET_TUNNEL_ASSAULT_SECONDS, SECRET_TUNNEL_MATCH_MS, SECRET_TUNNEL_PREPARE_MS, SECRET_TUNNEL_PREPARE_SECONDS, TUNNEL_ACCESS, allocateSecretTunnelWave, canTraverseSecretTunnel, canTraverseSecretTunnelInPhase, chooseSecretTunnelRoute, createSecretTunnelOverlay, digSecretTunnelTile, evaluateSecretTunnelConnections, resolveSecretTunnelPreparation, resolveSecretTunnelTimeout, sealSecretTunnelTileForTeam, secretTunnelPhaseAt, secretTunnelTileAt, secretTunnelTileViewForTeam, selectSecretTunnelContact, shareSecretTunnelBackbone } from "../game/secretTunnelRules.ts";
 
 const blankGrid = () =>
   Array.from({ length: 36 }, (_, y) =>
@@ -715,4 +716,266 @@ test("minion progression reaches level five without changing both teams' parity"
   assert.equal(MINION_LEVELS[4].hp, 1.75);
   assert.equal(MINION_LEVELS[4].damage, 1.55);
   assert.equal(MINION_LEVELS[4].speed, 1.12);
+});
+
+test("secret tunnel overlays keep each team's excavation, passage, and visibility private", () => {
+  let overlay = createSecretTunnelOverlay({
+    width: 3,
+    height: 1,
+    durability: 3,
+    initialAccessAt: ({ x }) =>
+      x === 0 ? TUNNEL_ACCESS.blue : x === 2 ? TUNNEL_ACCESS.red : TUNNEL_ACCESS.none,
+  });
+
+  let dig = digSecretTunnelTile(overlay, { x: 1, y: 0 }, "blue", 2);
+  overlay = dig.overlay;
+  assert.equal(dig.opened, false);
+  assert.equal(dig.remainingDurability, 1);
+  assert.equal(secretTunnelTileAt(overlay, { x: 1, y: 0 })?.durability.red, 3);
+  assert.deepEqual(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "blue"), {
+    visibility: "digging",
+    visibleAccess: TUNNEL_ACCESS.none,
+    durability: 1,
+    maxDurability: 3,
+    canTraverse: false,
+  });
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "red").visibility, "hidden");
+
+  dig = digSecretTunnelTile(overlay, { x: 1, y: 0 }, "red", 3);
+  overlay = dig.overlay;
+  assert.equal(dig.opened, true);
+  assert.equal(dig.becameShared, false);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "red"), true);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), false);
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "red").visibility, "private");
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "blue").visibility, "digging");
+
+  dig = digSecretTunnelTile(overlay, { x: 1, y: 0 }, "blue", 1);
+  overlay = dig.overlay;
+  assert.equal(dig.opened, true);
+  assert.equal(dig.becameShared, true);
+  assert.equal(dig.tile.access, TUNNEL_ACCESS.shared);
+  assert.equal(dig.tile.excavatedBy, TUNNEL_ACCESS.shared);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), true);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "red"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "prepare"), false);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "prepare"), false);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "assault"), false);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "assault"), false);
+  assert.equal(dig.tile.sharedBackbone, false, "a raw contact stays sealed until one route is selected");
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "blue").visibility, "shared");
+});
+
+test("secret tunnel contact shares only the deterministic core-to-contact backbone", () => {
+  const cores = { blue: { x: 0, y: 1 }, red: { x: 6, y: 1 } },
+    overlay = createSecretTunnelOverlay({
+      width: 7,
+      height: 3,
+      initialAccessAt: ({ x, y }) => {
+        if (x === 3 && y === 1) return TUNNEL_ACCESS.shared;
+        if (y === 1 && x <= 2 || x === 1 && y === 0) return TUNNEL_ACCESS.blue;
+        if (y === 1 && x >= 4 || x === 5 && y === 2) return TUNNEL_ACCESS.red;
+        return TUNNEL_ACCESS.none;
+      },
+      initialExcavatedByAt: ({ x, y }) => {
+        if (x === 3 && y === 1) return TUNNEL_ACCESS.shared;
+        if (y === 1 && x > 0 && x <= 2 || x === 1 && y === 0) return TUNNEL_ACCESS.blue;
+        if (y === 1 && x >= 4 && x < 6 || x === 5 && y === 2) return TUNNEL_ACCESS.red;
+        return TUNNEL_ACCESS.none;
+      },
+    }),
+    result = shareSecretTunnelBackbone(overlay, cores, { x: 3, y: 1 });
+
+  assert.equal(result.connected, true);
+  assert.deepEqual(result.backbone.map(({ x, y }) => `${x},${y}`), [
+    "0,1", "1,1", "2,1", "3,1", "4,1", "5,1", "6,1",
+  ]);
+  assert.equal(result.changed.length, 7);
+  for (let x = 0; x <= 6; x++) {
+    assert.equal(secretTunnelTileAt(result.overlay, { x, y: 1 })?.access, TUNNEL_ACCESS.shared);
+    assert.equal(secretTunnelTileAt(result.overlay, { x, y: 1 })?.sharedBackbone, true);
+    assert.equal(canTraverseSecretTunnelInPhase(result.overlay, { x, y: 1 }, "blue", "assault"), true);
+    assert.equal(canTraverseSecretTunnelInPhase(result.overlay, { x, y: 1 }, "red", "assault"), true);
+  }
+  assert.equal(secretTunnelTileAt(result.overlay, { x: 1, y: 0 })?.access, TUNNEL_ACCESS.blue);
+  assert.equal(secretTunnelTileAt(result.overlay, { x: 5, y: 2 })?.access, TUNNEL_ACCESS.red);
+});
+
+test("secret tunnel contact selection is deterministic and defers backbone sharing", () => {
+  const cores = { blue: { x: 0, y: 1 }, red: { x: 6, y: 1 } },
+    overlay = createSecretTunnelOverlay({
+      width: 7,
+      height: 3,
+      initialAccessAt: ({ x, y }) => {
+        if (x === 3 && (y === 0 || y === 2)) return TUNNEL_ACCESS.shared;
+        if (y === 1 && x <= 2 || x === 2 && (y === 0 || y === 2))
+          return TUNNEL_ACCESS.blue;
+        if (y === 1 && x >= 4 || x === 4 && (y === 0 || y === 2))
+          return TUNNEL_ACCESS.red;
+        return TUNNEL_ACCESS.none;
+      },
+      initialExcavatedByAt: ({ x, y }) => {
+        if (x === 3 && (y === 0 || y === 2)) return TUNNEL_ACCESS.shared;
+        if (y === 1 && x > 0 && x <= 2 || x === 2 && (y === 0 || y === 2))
+          return TUNNEL_ACCESS.blue;
+        if (y === 1 && x >= 4 && x < 6 || x === 4 && (y === 0 || y === 2))
+          return TUNNEL_ACCESS.red;
+        return TUNNEL_ACCESS.none;
+      },
+    }),
+    before = JSON.stringify(overlay),
+    selection = selectSecretTunnelContact(overlay, cores);
+
+  assert.deepEqual(selection?.contact, { x: 3, y: 0 }, "equal routes use y then x tie-breaking");
+  assert.equal(selection?.totalDistance, 8);
+  assert.deepEqual(selection?.bluePath.at(0), cores.blue);
+  assert.deepEqual(selection?.redPath.at(0), cores.red);
+  assert.equal(JSON.stringify(overlay), before, "selection must not promote a backbone during preparation");
+  assert.equal(secretTunnelTileAt(overlay, { x: 1, y: 1 })?.access, TUNNEL_ACCESS.blue);
+  assert.equal(secretTunnelTileAt(overlay, { x: 5, y: 1 })?.access, TUNNEL_ACCESS.red);
+
+  const shared = shareSecretTunnelBackbone(overlay, cores, selection.contact);
+  assert.equal(shared.connected, true);
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 1, y: 1 })?.access, TUNNEL_ACCESS.shared);
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 3, y: 2 })?.access, TUNNEL_ACCESS.blue,
+    "an independent contact returns to its first owner instead of opening a second route");
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 3, y: 2 })?.sharedBackbone, false);
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 2, y: 2 })?.access, TUNNEL_ACCESS.blue);
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 4, y: 2 })?.access, TUNNEL_ACCESS.red);
+
+  const grantedOnly = createSecretTunnelOverlay({
+    width: 3,
+    height: 1,
+    initialAccessAt: () => TUNNEL_ACCESS.shared,
+  });
+  assert.equal(selectSecretTunnelContact(grantedOnly, {
+    blue: { x: 0, y: 0 },
+    red: { x: 2, y: 0 },
+  }), null, "shared access without two-sided excavation is not a contact");
+});
+
+test("secret tunnel sealing removes only the acting team and protects both cores", () => {
+  const cores = { blue: { x: 0, y: 0 }, red: { x: 3, y: 0 } };
+  let overlay = createSecretTunnelOverlay({
+    width: 4,
+    height: 1,
+    durability: 3,
+    initialAccessAt: ({ x }) =>
+      x === 0 ? TUNNEL_ACCESS.blue :
+        x === 1 ? TUNNEL_ACCESS.shared :
+          x === 3 ? TUNNEL_ACCESS.red : TUNNEL_ACCESS.none,
+    initialExcavatedByAt: ({ x }) => x === 1 ? TUNNEL_ACCESS.shared : TUNNEL_ACCESS.none,
+  });
+
+  const sharedSeal = sealSecretTunnelTileForTeam(overlay, { x: 1, y: 0 }, "blue", cores);
+  overlay = sharedSeal.overlay;
+  assert.equal(sharedSeal.sealed, true);
+  assert.equal(sharedSeal.blockedReason, null);
+  assert.equal(sharedSeal.previousAccess, TUNNEL_ACCESS.shared);
+  assert.equal(sharedSeal.remainingAccess, TUNNEL_ACCESS.red);
+  assert.equal(sharedSeal.tile.excavatedBy, TUNNEL_ACCESS.red);
+  assert.equal(sharedSeal.tile.durability.blue, 3);
+  assert.equal(sharedSeal.tile.durability.red, 0, "opponent opening stays intact");
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), false);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "red"), true);
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "red").visibility, "private");
+
+  overlay = digSecretTunnelTile(overlay, { x: 2, y: 0 }, "blue", 1).overlay;
+  overlay = digSecretTunnelTile(overlay, { x: 2, y: 0 }, "red", 1).overlay;
+  const partialSeal = sealSecretTunnelTileForTeam(overlay, { x: 2, y: 0 }, "blue", cores);
+  overlay = partialSeal.overlay;
+  assert.equal(partialSeal.sealed, true, "partial dig progress can be filled before opening");
+  assert.equal(partialSeal.tile.durability.blue, 3);
+  assert.equal(partialSeal.tile.durability.red, 2, "opponent partial dig progress is preserved");
+
+  const coreSeal = sealSecretTunnelTileForTeam(overlay, cores.blue, "blue", cores);
+  assert.equal(coreSeal.sealed, false);
+  assert.equal(coreSeal.blockedReason, "core");
+  assert.equal(coreSeal.overlay, overlay);
+  assert.equal(coreSeal.remainingAccess, TUNNEL_ACCESS.blue);
+});
+
+test("secret tunnel preparation accepts direct or shared contact routes and isolates non-builders", () => {
+  const cores = { blue: { x: 0, y: 1 }, red: { x: 6, y: 1 } },
+    contactOverlay = createSecretTunnelOverlay({
+      width: 7,
+      height: 3,
+      initialAccessAt: ({ x, y }) => {
+        if (y !== 1) return TUNNEL_ACCESS.none;
+        if (x === 3) return TUNNEL_ACCESS.shared;
+        return x < 3 ? TUNNEL_ACCESS.blue : TUNNEL_ACCESS.red;
+      },
+      initialExcavatedByAt: ({ x, y }) => {
+        if (y !== 1 || x === 0 || x === 6) return TUNNEL_ACCESS.none;
+        if (x === 3) return TUNNEL_ACCESS.shared;
+        return x < 3 ? TUNNEL_ACCESS.blue : TUNNEL_ACCESS.red;
+      },
+    }),
+    contactConnections = evaluateSecretTunnelConnections(contactOverlay, cores);
+  assert.equal(contactConnections.blue.valid, true);
+  assert.equal(contactConnections.blue.kind, "shared-contact");
+  assert.equal(contactConnections.red.valid, true);
+  assert.equal(contactConnections.red.kind, "shared-contact");
+  assert.deepEqual(resolveSecretTunnelPreparation(contactConnections), {
+    phase: "assault",
+    winner: null,
+    reason: "both-connected",
+  });
+
+  const directCores = { blue: { x: 0, y: 0 }, red: { x: 4, y: 0 } },
+    oneBuilderOverlay = createSecretTunnelOverlay({
+      width: 5,
+      height: 1,
+      initialAccessAt: ({ x }) =>
+        x === 4 ? TUNNEL_ACCESS.shared : TUNNEL_ACCESS.blue,
+      initialExcavatedByAt: ({ x }) =>
+        x > 0 ? TUNNEL_ACCESS.blue : TUNNEL_ACCESS.none,
+    }),
+    oneBuilderConnections = evaluateSecretTunnelConnections(oneBuilderOverlay, directCores);
+  assert.equal(oneBuilderConnections.blue.valid, true);
+  assert.equal(oneBuilderConnections.blue.kind, "direct-core");
+  assert.equal(oneBuilderConnections.red.valid, false, "shared access without red excavation cannot avoid isolation");
+  assert.deepEqual(resolveSecretTunnelPreparation(oneBuilderConnections), {
+    phase: "finished",
+    winner: "blue",
+    reason: "red-isolated",
+  });
+
+  assert.deepEqual(resolveSecretTunnelPreparation({ blue: false, red: false }), {
+    phase: "finished",
+    winner: null,
+    reason: "both-isolated",
+  });
+});
+
+test("secret tunnel match timing, timeout judgment, and A/B allocations are deterministic", () => {
+  assert.equal(SECRET_TUNNEL_PREPARE_SECONDS, 120);
+  assert.equal(SECRET_TUNNEL_ASSAULT_SECONDS, 240);
+  assert.equal(SECRET_TUNNEL_PREPARE_MS, 120000);
+  assert.equal(SECRET_TUNNEL_MATCH_MS, 360000);
+  assert.equal(secretTunnelPhaseAt(119999), "prepare");
+  assert.equal(secretTunnelPhaseAt(120000), "assault");
+  assert.equal(secretTunnelPhaseAt(359999), "assault");
+  assert.equal(secretTunnelPhaseAt(360000), "finished");
+
+  assert.deepEqual(resolveSecretTunnelTimeout({
+    blue: { coreHp: 1, shieldHp: 0 },
+    red: { coreHp: 0, shieldHp: 999 },
+  }), { phase: "finished", winner: "blue", reason: "core-hp" });
+  assert.deepEqual(resolveSecretTunnelTimeout({
+    blue: { coreHp: 100, shieldHp: 40 },
+    red: { coreHp: 100, shieldHp: 60 },
+  }), { phase: "finished", winner: "red", reason: "shield-hp" });
+  assert.deepEqual(resolveSecretTunnelTimeout({
+    blue: { coreHp: 100, shieldHp: 60 },
+    red: { coreHp: 100, shieldHp: 60 },
+  }), { phase: "finished", winner: null, reason: "draw" });
+
+  assert.equal(Array.from({ length: 8 }, (_, index) => chooseSecretTunnelRoute(index, "50:50")).join(""), "ABABABAB");
+  assert.equal(Array.from({ length: 8 }, (_, index) => chooseSecretTunnelRoute(index, "75:25")).join(""), "AAABAAAB");
+  assert.equal(Array.from({ length: 8 }, (_, index) => chooseSecretTunnelRoute(index, "25:75")).join(""), "ABBBABBB");
+  assert.deepEqual(allocateSecretTunnelWave([0, 1, 2, 3, 4], "75:25"), {
+    A: [0, 1, 2, 4],
+    B: [3],
+  });
 });

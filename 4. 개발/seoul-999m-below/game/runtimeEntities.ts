@@ -117,7 +117,11 @@ export type Unit = {
   onlinePlayerId?: string;
   onlineSyncId?: string;
   networkController?: "remote" | "ai";
+  networkVisible?: boolean;
   remoteGoal?: { x: number; y: number };
+  networkSurvivalCooldownUntil?: number;
+  networkSurvivalArmorUntil?: number;
+  networkSurvivalEvadeUntil?: number;
   lastDamagedAt?: number;
 };
 

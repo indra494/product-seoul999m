@@ -71,6 +71,27 @@ import { AUTONOMOUS_FRONTIER_REPLAN_MS, computerWaveFormation, frontLineScreenGo
 import { canReserveElite, createEliteDeploymentState, ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, eliteReadyInWaves, REGULAR_MINION_CAP, REINFORCEMENT_MINION_CAP, reinforcementFormation, withReservedElite } from "../game/eliteMinions";
 import { creditedAmount, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, installationKillCredits, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS } from "../game/skirmishEconomy";
 import {
+  SECRET_TUNNEL_ASSAULT_MS,
+  SECRET_TUNNEL_PREPARE_MS,
+  TUNNEL_ACCESS,
+  canTraverseSecretTunnel,
+  canTraverseSecretTunnelInPhase,
+  chooseSecretTunnelRoute,
+  createSecretTunnelOverlay,
+  digSecretTunnelTile,
+  evaluateSecretTunnelConnections,
+  resolveSecretTunnelPreparation,
+  resolveSecretTunnelTimeout,
+  sealSecretTunnelTileForTeam,
+  secretTunnelTileViewForTeam,
+  selectSecretTunnelContact,
+  shareSecretTunnelBackbone,
+  tunnelAccessIncludesTeam,
+  type BattlePhase,
+  type SecretTunnelOverlay,
+  type TunnelRouteAllocation,
+} from "../game/secretTunnelRules";
+import {
   attackPositionCandidates,
   diverseRouteToGoal,
   reachableFrontierGoal,
@@ -108,11 +129,19 @@ import {
   shouldRemoveSpawnOrder,
   shouldUseCampaign1GuardGoal,
 } from "../game/campaignRules";
-import { createComputerMatch, createOnlineMatch, type BattleMapId, type MatchConfig, type TeamSize } from "../game/matchConfig";
+import {
+  createComputerMatch,
+  createOnlineMatch,
+  type BattleMapId,
+  type BattleRuleset,
+  type MatchConfig,
+  type TeamSize,
+} from "../game/matchConfig";
 import {
   ONLINE_REMOTE_INTERPOLATION_MS,
   ONLINE_SNAPSHOT_INTERVAL_MS,
   newestOnlineRoomView,
+  onlineRoomRuleset,
   roomCanStart,
   shouldApplyAuthoritativeHeroPosition,
   type OnlineRoomView,
@@ -133,6 +162,7 @@ import {
 
 type RouteStance = "assault" | "guard" | "capture";
 type GameMode = "skirmish" | "campaign1";
+type BattleOutcome = "win" | "lose" | "draw";
 type CampaignDifficulty = "easy" | "hard";
 type CampaignCinematicMode = "missionStart" | "replay";
 type BattleScale = 1 | 1.5;
@@ -514,7 +544,7 @@ export default function Seoul999mBelow() {
     [campaignCinematicMode, setCampaignCinematicMode] = useState<CampaignCinematicMode>("missionStart"),
     [campaignPrologueError, setCampaignPrologueError] = useState<string | null>(null),
     [campaignCinematicError, setCampaignCinematicError] = useState<string | null>(null),
-    [outcome, setOutcome] = useState<"win" | "lose" | null>(null),
+    [outcome, setOutcome] = useState<BattleOutcome | null>(null),
     [defeatSummary, setDefeatSummary] = useState<DefeatSummary | null>(null),
     [selected, setSelected] = useState<Skill>(0),
     [buildChoice, setBuildChoice] = useState<BuildMode>("none"),
@@ -536,6 +566,7 @@ export default function Seoul999mBelow() {
     [selectedHeroId, setSelectedHeroId] = useState("yoo-seungcheon"),
     [selectedAllyHeroId, setSelectedAllyHeroId] = useState("kimssi"),
     [skirmishTeamSize, setSkirmishTeamSize] = useState<TeamSize>(1),
+    [selectedRuleset, setSelectedRuleset] = useState<BattleRuleset>("secret-tunnel"),
     [selectedMapId, setSelectedMapId] = useState<BattleMapId>("central-exchange"),
     [selectedLoadout, setSelectedLoadout] = useState<[ItemId | null, ItemId | null]>([
       "wallBomb",
@@ -588,6 +619,10 @@ export default function Seoul999mBelow() {
       missionStage: 0,
       missionSubjectsAlive: 0,
       missionSubjectsCompleted: 0,
+      battlePhase: "open-front" as "open-front" | "prepare" | "assault" | "finished",
+      battleTime: 0,
+      battleConnected: true,
+      routeAllocation: "50:50" as TunnelRouteAllocation,
     }),
     [message, setMessage] = useState("유승천의 파란 드릴로 땅굴을 열어라.");
   useEffect(() => {
@@ -609,7 +644,7 @@ export default function Seoul999mBelow() {
     else if (screen !== "play") void gameAudio.startMenu();
   }, [screen]);
   useEffect(() => {
-    if (screen === "play" && outcome) void gameAudio.result(outcome);
+    if (screen === "play" && outcome && outcome !== "draw") void gameAudio.result(outcome);
   }, [outcome, screen]);
   useEffect(() => {
     if (screen !== "play" || gameMode !== "campaign1" || outcome !== "win") return;
@@ -622,6 +657,7 @@ export default function Seoul999mBelow() {
   const canvasRef = useRef<HTMLCanvasElement>(null),
     commands = useRef<string[]>([]),
     mobileMove = useRef<{ x: number; y: number } | null>(null),
+    mobileOnlineMoveTimerRef = useRef<number | null>(null),
     pausedRef = useRef(false),
     minimapCollapsedRef = useRef(false),
     pendingTalentTiersRef = useRef<TalentTier[]>([]),
@@ -634,7 +670,12 @@ export default function Seoul999mBelow() {
     onlineSocketRef = useRef<OnlineRoomSocket | null>(null),
     onlineAiPlayersRef = useRef<Set<string>>(new Set()),
     fullscreenExitGuardUntilRef = useRef(0),
-    isCampaign = gameMode === "campaign1";
+    isCampaign = gameMode === "campaign1",
+    isSecretBattleUi = !isCampaign && activeMatchConfig?.ruleset === "secret-tunnel";
+  useEffect(() => () => {
+    if (mobileOnlineMoveTimerRef.current !== null)
+      window.clearInterval(mobileOnlineMoveTimerRef.current);
+  }, []);
   useEffect(() => {
     let wasFullscreen = Boolean(document.fullscreenElement);
     const handleFullscreenChange = () => {
@@ -665,13 +706,17 @@ export default function Seoul999mBelow() {
         if (v === "skill1") publishOnlineInput({ type: "skill", slot: 1 });
         else if (v === "release2") publishOnlineInput({ type: "skill", slot: 2 });
         else if (v === "release3") publishOnlineInput({ type: "skill", slot: 4 });
-        else if (v === "skill4") publishOnlineInput({ type: "drill" });
         else if (v === "tactical:defense") publishOnlineInput({ type: "tactical", tacticalRole: "defense" });
         else if (v === "tactical:offense") publishOnlineInput({ type: "tactical", tacticalRole: "offense" });
         else if (v === "tactical:recovery") publishOnlineInput({ type: "tactical", tacticalRole: "recovery" });
         else if (v === "tactical:reinforce") publishOnlineInput({ type: "tactical", tacticalRole: "reinforce" });
         else if (v === "research:minion") publishOnlineInput({ type: "research" });
         else if (v === "elite:reserve") publishOnlineInput({ type: "elite" });
+        else if (v.startsWith("allocation:")) {
+          const allocation = v.slice(11) as TunnelRouteAllocation;
+          if (["50:50", "75:25", "25:75"].includes(allocation))
+            publishOnlineInput({ type: "allocation", allocation });
+        }
       }
     },
     chooseTalent = (id: string) => {
@@ -737,6 +782,10 @@ export default function Seoul999mBelow() {
     };
   const togglePause = () => {
     if (screen !== "play" || outcome) return;
+    if (activeMatchConfig?.kind === "online") {
+      setMessage("온라인 대전은 일시정지할 수 없다");
+      return;
+    }
     openTalentTier(null);
     pausedRef.current = !pausedRef.current;
     mobileMove.current = null;
@@ -875,6 +924,7 @@ export default function Seoul999mBelow() {
       return;
     }
     setActiveMatchConfig(createComputerMatch({
+      ruleset: selectedRuleset,
       teamSize: skirmishTeamSize,
       mapId: selectedMapId,
       playerHeroId: heroId,
@@ -885,6 +935,7 @@ export default function Seoul999mBelow() {
     pausedRef.current = false;
     setPaused(false);
     setOutcome(null);
+    setRouteStances({ A: "guard", B: "guard" });
     setSelected(0);
     setBuildChoice("none");
     setBuildMenuOpen(false);
@@ -903,7 +954,7 @@ export default function Seoul999mBelow() {
     try {
       const result = await createOnlineRoom({
         nickname, heroId: roomHero.id, faction: roomHero.faction,
-        teamSize: skirmishTeamSize, mapId: selectedMapId,
+        ruleset: selectedRuleset, teamSize: skirmishTeamSize, mapId: selectedMapId,
       });
       setOnlineRoom(result.room);
       setOnlineIdentity(result.identity);
@@ -1026,17 +1077,43 @@ export default function Seoul999mBelow() {
     void preloadRuntimeVisuals().then(() => {
       if (cancelled) return;
       const config = createOnlineMatch({
-        teamSize: onlineRoom.teamSize, mapId: onlineRoom.mapId, seed: onlineRoom.seed,
+        ruleset: onlineRoomRuleset(onlineRoom), teamSize: onlineRoom.teamSize, mapId: onlineRoom.mapId, seed: onlineRoom.seed,
         localPlayerId: local.id, players: onlineRoom.players,
       });
-      lastOnlineCommandRef.current = onlineRoom.commandSequence;
-      onlineCommandInboxRef.current = [];
-      onlineSnapshotRef.current = null;
-      lastOnlineSnapshotRef.current = onlineRoom.snapshot?.sequence ?? 0;
+      const capturedSnapshot = onlineRoom.snapshot,
+        currentSnapshot = onlineSnapshotRef.current,
+        latestSnapshot = !capturedSnapshot || (
+          currentSnapshot && currentSnapshot.sequence > capturedSnapshot.sequence
+        )
+          ? currentSnapshot
+          : capturedSnapshot,
+        recoveredThrough = latestSnapshot?.lastAppliedCommandSequence ?? 0,
+        replayable = local.id === onlineRoom.hostId
+          ? onlineRoom.commands.filter((candidate) =>
+              candidate.playerId !== local.id && candidate.sequence > recoveredThrough,
+            )
+          : [],
+        mergedCommands = new Map<number, OnlineBattleCommand>();
+      for (const candidate of [...onlineCommandInboxRef.current, ...replayable])
+        if (candidate.sequence > recoveredThrough && candidate.playerId !== local.id)
+          mergedCommands.set(candidate.sequence, candidate);
+      onlineCommandInboxRef.current = [...mergedCommands.values()].sort(
+        (left, right) => left.sequence - right.sequence,
+      );
+      lastOnlineCommandRef.current = Math.max(
+        lastOnlineCommandRef.current,
+        onlineRoom.commandSequence,
+      );
+      onlineSnapshotRef.current = latestSnapshot ?? null;
+      lastOnlineSnapshotRef.current = Math.max(
+        lastOnlineSnapshotRef.current,
+        latestSnapshot?.sequence ?? 0,
+      );
       setActiveMatchConfig(config);
       setSelectedHeroId(local.heroId);
       setGameMode("skirmish");
       setOutcome(null);
+      setRouteStances({ A: "guard", B: "guard" });
       setMessage(
         `온라인 방 ${onlineRoom.code} · ${local.nickname} 투입 · 공용 전장 #${onlineRoom.seed
           .toString(16)
@@ -1057,7 +1134,7 @@ export default function Seoul999mBelow() {
     if (!outcome || !onlineRoom || !onlineIdentity || onlineRoom.status !== "playing" || onlineRoom.hostId !== onlineIdentity.playerId) return;
     const local = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId);
     if (!local) return;
-    const winner = outcome === "win" ? local.team : local.team === "blue" ? "red" : "blue";
+    const winner = outcome === "draw" ? "draw" : outcome === "win" ? local.team : local.team === "blue" ? "red" : "blue";
     if (onlineSocketRef.current?.send("finish", { winner })) return;
     void updateOnlineRoom(onlineRoom.code, onlineIdentity, "finish", { winner }).then((result) => setOnlineRoom(result.room)).catch((error) =>
       setLobbyNotice(error instanceof Error ? error.message : "전투 결과 확정 실패"),
@@ -1067,9 +1144,22 @@ export default function Seoul999mBelow() {
     if (outcome || screen !== "play" || onlineRoom?.status !== "finished" || !onlineRoom.winner || !onlineIdentity) return;
     const local = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId);
     if (local) {
-      setOutcome(local.team === onlineRoom.winner ? "win" : "lose");
+      const localOutcome = onlineRoom.winner === "draw"
+        ? "draw"
+        : local.team === onlineRoom.winner
+          ? "win"
+          : "lose";
+      setOutcome(localOutcome);
       if (onlineRoom.finishReason === "player-left")
         setMessage(local.id === onlineRoom.departedPlayerId ? "방 이탈 · 온라인 경기 종료" : "상대 이탈 · 온라인 경기 승리");
+      else if (onlineRoomRuleset(onlineRoom) === "secret-tunnel")
+        setMessage(
+          localOutcome === "draw"
+            ? "비밀 굴착전 최종 판정 · 무승부"
+            : localOutcome === "win"
+              ? "비밀 굴착전 최종 판정 · 아군 승리"
+              : "비밀 굴착전 최종 판정 · 아군 패배",
+        );
     }
   }, [onlineRoom?.status, onlineRoom?.winner, onlineIdentity?.playerId, outcome, screen]);
   const returnToOnlineRoom = () => {
@@ -1101,6 +1191,7 @@ export default function Seoul999mBelow() {
       return;
     }
     setGameMode("campaign1");
+    setActiveMatchConfig(null);
     setSelectedHeroId("yoo-seungcheon");
     pausedRef.current = false;
     setPaused(false);
@@ -1284,6 +1375,16 @@ export default function Seoul999mBelow() {
       lastHud = 0,
       onlineSnapshotClock = 0,
       appliedOnlineSnapshot = 0,
+      appliedOnlineCommandSequence =
+        activeMatchConfig?.kind === "online" &&
+        onlineRoom?.hostId === onlineIdentity?.playerId
+          ? onlineRoom.snapshot?.lastAppliedCommandSequence ?? 0
+          : 0,
+      hostRestoreSnapshotSequence =
+        activeMatchConfig?.kind === "online" &&
+        onlineRoom?.hostId === onlineIdentity?.playerId
+          ? onlineRoom.snapshot?.sequence ?? 0
+          : 0,
       lastMarchReservationFrame = -1,
       unitId = 1,
       buildId = 1,
@@ -1454,7 +1555,14 @@ export default function Seoul999mBelow() {
       for (const s of shots) {
         const tx = Math.floor(s.x / S),
           ty = Math.floor(s.y / S);
-        if (s.team !== "blue" && !visible(tx, ty)) continue;
+        if (
+          s.team !== "blue" &&
+          (
+            battlePhase === "prepare" ||
+            !visible(tx, ty) ||
+            (isSecretTunnel && !openForTeam(tx, ty, "blue"))
+          )
+        ) continue;
         const x = s.x - cam.x,
           y = s.y - cam.y,
           angle = Math.atan2(s.vy, s.vx);
@@ -1683,7 +1791,34 @@ export default function Seoul999mBelow() {
       canonicalTeamFor = (team: Team): Team =>
         canonicalLocalTeam === "blue" ? team : oppositeTeam(team),
       localTeamForCanonical = (team: Team): Team =>
-        canonicalLocalTeam === "blue" ? team : oppositeTeam(team);
+        canonicalLocalTeam === "blue" ? team : oppositeTeam(team),
+      swapTunnelAccess = (access: 0 | 1 | 2 | 3): 0 | 1 | 2 | 3 =>
+        access === 1 ? 2 : access === 2 ? 1 : access,
+      canonicalTunnelAccess = (access: 0 | 1 | 2 | 3) =>
+        canonicalLocalTeam === "blue" ? access : swapTunnelAccess(access),
+      localTunnelAccess = (access: 0 | 1 | 2 | 3) =>
+        canonicalLocalTeam === "blue" ? access : swapTunnelAccess(access);
+    const isSecretTunnel = !isCampaign && activeMatchConfig?.ruleset === "secret-tunnel",
+      initialSecretPhaseEndsAt = isSecretTunnel && activeMatchConfig?.kind === "online"
+        ? onlineRoom?.preparationEndsAt ?? Date.now() + SECRET_TUNNEL_PREPARE_MS
+        : 0;
+    let battlePhase: BattlePhase = isSecretTunnel ? "prepare" : "assault",
+      battlePhaseTimeLeft = isSecretTunnel
+        ? activeMatchConfig?.kind === "online"
+          ? Math.max(0, initialSecretPhaseEndsAt - Date.now())
+          : SECRET_TUNNEL_PREPARE_MS
+        : 0,
+      battlePhaseEndsAt = initialSecretPhaseEndsAt,
+      tunnelAllocations: Record<Team, TunnelRouteAllocation> = {
+        blue: "50:50",
+        red: "50:50",
+      },
+      secretWarning30Shown = false,
+      secretWarning10Shown = false,
+      secretBlueConnected = false,
+      secretRedConnected = false,
+      secretOreClaims = new Set<string>(),
+      secretTunnelOverlay: SecretTunnelOverlay | null = null;
     const grid: Tile[][] = Array.from({ length: ROWS }, (_, y) =>
       Array.from({ length: COLS }, (_, x) => {
         if (x === 0 || y === 0 || x === COLS - 1 || y === ROWS - 1)
@@ -1789,6 +1924,27 @@ export default function Seoul999mBelow() {
     };
     openRoom(ALLY);
     if (!(isCampaign && campaignChapter === 1)) openRoom(ENEMY);
+    if (isSecretTunnel) {
+      secretTunnelOverlay = createSecretTunnelOverlay({
+        width: COLS,
+        height: ROWS,
+        durabilityAt: ({ x, y }) => {
+          const tile = grid[y]?.[x];
+          return tile?.type === 4 ? 99 : Math.max(1, tile?.hp || tile?.max || 2) * 5;
+        },
+        initialAccessAt: ({ x, y }) => {
+          const blueRoom = Math.max(Math.abs(x - ALLY.x), Math.abs(y - ALLY.y)) <= 3,
+            redRoom = Math.max(Math.abs(x - ENEMY.x), Math.abs(y - ENEMY.y)) <= 3;
+          return blueRoom && redRoom
+            ? TUNNEL_ACCESS.shared
+            : blueRoom
+              ? TUNNEL_ACCESS.blue
+              : redRoom
+                ? TUNNEL_ACCESS.red
+                : TUNNEL_ACCESS.none;
+        },
+      });
+    }
     if (isCampaign) {
       const carve = (x0: number, y0: number, x1: number, y1: number) => {
         for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++)
@@ -2141,6 +2297,8 @@ export default function Seoul999mBelow() {
       else void combatAudio.start(selectedBattleMap.id);
     };
     startAmbient();
+    if (isSecretTunnel)
+      setMessage("비밀 굴착 2:00 · 적 거점 확인 → 터널 연결 → 광석·방어 선택");
     const tone = (kind: CombatSfx) => {
       void combatAudio.sfx(kind);
     };
@@ -2155,10 +2313,24 @@ export default function Seoul999mBelow() {
             color,
           });
       },
-      occupied = (x: number, y: number, ignore?: Unit) =>
-        units.find((u) => u !== ignore && u.alive && u.campaignActivated !== false && u.x === x && u.y === y),
-      turretAt = (x: number, y: number) =>
-        turrets.find((t) => t.hp > 0 && t.campaignActivated !== false && t.x === x && t.y === y),
+      occupied = (x: number, y: number, ignore?: Unit, movingTeam: Team = ignore?.team ?? "blue") =>
+        units.find((u) =>
+          u !== ignore &&
+          u.alive &&
+          u.networkVisible !== false &&
+          u.campaignActivated !== false &&
+          u.x === x &&
+          u.y === y &&
+          !(isSecretTunnel && battlePhase === "prepare" && u.team !== movingTeam),
+        ),
+      turretAt = (x: number, y: number, movingTeam: Team = "blue") =>
+        turrets.find((t) =>
+          t.hp > 0 &&
+          t.campaignActivated !== false &&
+          t.x === x &&
+          t.y === y &&
+          !(isSecretTunnel && battlePhase === "prepare" && t.team !== movingTeam),
+        ),
       baseAt = (x: number, y: number) =>
         x === ALLY.x && y === ALLY.y
           ? "blue"
@@ -2194,12 +2366,32 @@ export default function Seoul999mBelow() {
         ) return "red" as const;
         return null;
       },
-      open = (x: number, y: number) =>
-        !!grid[y]?.[x] && WALKABLE_TERRAIN.has(grid[y][x].type),
+      openForTeam = (x: number, y: number, team: Team) =>
+        isSecretTunnel && secretTunnelOverlay
+          ? canTraverseSecretTunnelInPhase(secretTunnelOverlay, { x, y }, team, battlePhase)
+          : !!grid[y]?.[x] && WALKABLE_TERRAIN.has(grid[y][x].type),
+      canEngageAt = (team: Team, x: number, y: number) =>
+        !isSecretTunnel || (battlePhase === "assault" && openForTeam(x, y, team)),
+      open = (x: number, y: number) => openForTeam(x, y, "blue"),
+      tileForLocalTunnelView = (x: number, y: number): Tile => {
+        const source = grid[y]?.[x] ?? { type: 4, hp: 99, max: 99 };
+        if (!isSecretTunnel || !secretTunnelOverlay) return source;
+        const view = secretTunnelTileViewForTeam(secretTunnelOverlay, { x, y }, "blue");
+        if (view.canTraverse)
+          return { ...source, type: 0, hp: 0, max: 0 };
+        if (source.type === 4) return source;
+        const hp = Math.max(1, view.durability ?? (source.hp || source.max || 2)),
+          max = Math.max(hp, view.maxDurability ?? (source.max || hp));
+        return { ...source, type: source.type === 0 ? 2 : source.type, hp, max };
+      },
       terrainMoveFactor = (x: number, y: number) =>
         grid[y]?.[x]?.surface === "shallowWater" ? 0.58 : 1,
       resolveUnitOverlaps = () => {
         const claimed = new Set<string>(),
+          claimKey = (unit: Unit, x: number, y: number) =>
+            isSecretTunnel && battlePhase === "prepare"
+              ? `${unit.team}:${x},${y}`
+              : `${x},${y}`,
           actors = units
             .filter((u) => u.alive)
             .sort(
@@ -2219,7 +2411,7 @@ export default function Seoul999mBelow() {
             { x: 0, y: -2 },
           ];
         for (const u of actors) {
-          let key = `${u.x},${u.y}`;
+          let key = claimKey(u, u.x, u.y);
           if (!claimed.has(key)) {
             claimed.add(key);
             continue;
@@ -2228,9 +2420,9 @@ export default function Seoul999mBelow() {
             .map((d) => ({ x: u.x + d.x, y: u.y + d.y }))
             .find(
               (p) =>
-                open(p.x, p.y) &&
-                !claimed.has(`${p.x},${p.y}`) &&
-                !turretAt(p.x, p.y) &&
+                openForTeam(p.x, p.y, u.team) &&
+                !claimed.has(claimKey(u, p.x, p.y)) &&
+                !turretAt(p.x, p.y, u.team) &&
                 !baseAt(p.x, p.y),
             );
           if (!escape) continue;
@@ -2242,7 +2434,7 @@ export default function Seoul999mBelow() {
             moveTarget = null;
             attackTarget = null;
           }
-          key = `${u.x},${u.y}`;
+          key = claimKey(u, u.x, u.y);
           claimed.add(key);
           u.act = Math.max(u.act, 180);
         }
@@ -2306,7 +2498,7 @@ export default function Seoul999mBelow() {
         return { distance: Math.hypot(px - cx, py - cy), t };
       };
     const visionSources = () => [
-        ...units.filter((u) => u.alive && u.team === "blue"),
+        ...units.filter((u) => u.alive && u.networkVisible !== false && u.team === "blue"),
         ...turrets.filter((t) => t.hp > 0 && t.team === "blue"),
       ],
       visionRadius = (u: Unit | Turret) =>
@@ -2332,7 +2524,7 @@ export default function Seoul999mBelow() {
             for (let x = minX; x <= maxX; x++)
               if ((u.x - x) ** 2 + (u.y - y) ** 2 <= r * r) {
                 seen[y][x] = true;
-                memory[y][x] = { ...grid[y][x] };
+                memory[y][x] = { ...tileForLocalTunnelView(x, y) };
               }
         }
       };
@@ -2479,7 +2671,8 @@ export default function Seoul999mBelow() {
         forceHostile = false,
         source?: { attacker: string; action: string; unit?: Unit; installation?: Turret },
       ) => {
-        if (!u.alive || (u.team === from && !forceHostile)) return 0;
+        if (!u.alive || u.networkVisible === false || (u.team === from && !forceHostile)) return 0;
+        if (isSecretTunnel && battlePhase === "prepare" && u.team !== from) return 0;
         const tacticalNow = performance.now(),
           tacticalDefenseActive = u.role === "minion" && tacticalNow < tacticalStates[u.team].defenseUntil,
           tacticalOffenseActive = source?.unit?.role === "minion" && tacticalNow < tacticalStates[source.unit.team].offenseUntil;
@@ -2489,15 +2682,21 @@ export default function Seoul999mBelow() {
           pushCombatPopup(blockedAt.x, blockedAt.y - 30, "차단", "#75e6ff", u.team, false, 520);
           return 0;
         }
-        if (u === hero && performance.now() < evadeUntil) {
-          burst(hero.x, hero.y, "#d7fbff", 10);
-          setMessage("회피 성공 · 피해 무효");
+        if (
+          (u === hero && performance.now() < evadeUntil) ||
+          performance.now() < (u.networkSurvivalEvadeUntil ?? 0)
+        ) {
+          if (u === hero) {
+            burst(hero.x, hero.y, "#d7fbff", 10);
+            setMessage("회피 성공 · 피해 무효");
+          }
           return 0;
         }
         const weakened = (u.vulnerableUntil ?? 0) > performance.now() ? 18 : 0,
           activeArmor =
             Math.max(0, u.armor - weakened) +
-            (u === hero && performance.now() < drillArmorUntil ? 10 : 0),
+            (u === hero && performance.now() < drillArmorUntil ? 10 : 0) +
+            (performance.now() < (u.networkSurvivalArmorUntil ?? 0) ? 10 : 0),
           arenaScale =
             isCampaign &&
             campaignChapter === 3 &&
@@ -2561,7 +2760,7 @@ export default function Seoul999mBelow() {
             target: { kind: "unit" | "installation"; id: number },
             reason: NonNullable<Unit["assistReason"]>,
           ) => {
-            const routeDistances = pathDistanceMap(anchor);
+            const routeDistances = pathDistanceMap(anchor, team);
             for (const ally of units) {
               if (
                 !ally.alive ||
@@ -2705,6 +2904,8 @@ export default function Seoul999mBelow() {
         mult = 1.5,
       ) => {
         if (from && t.team === from) return 0;
+        if (isSecretTunnel && battlePhase === "prepare" && from && t.team !== from) return 0;
+        if (from && !canEngageAt(from, t.x, t.y)) return 0;
         if (t.upgrade) {
           if (t.team === "blue") money += t.upgrade.cost;
           t.upgrade = undefined;
@@ -2763,7 +2964,7 @@ export default function Seoul999mBelow() {
           definition = tacticalDefinition(faction, role), state = tacticalStates[team];
         if (now < state.cooldownUntil || !spendTeamCredits(team, definition.cost)) return false;
         if (role === "area") {
-          if (!target || !open(target.x, target.y)) {
+          if (!target || !openForTeam(target.x, target.y, team)) {
             awardCredits(team, definition.cost);
             return false;
           }
@@ -2843,13 +3044,23 @@ export default function Seoul999mBelow() {
           }
           if (now < event.nextAt) continue;
           const damage = event.faction === "human" ? 32 : event.faction === "bugborn" ? 10 : 105,
-            targets = units.filter((unit) => unit.alive && unit.team !== event.team && Math.hypot(unit.x - event.x, unit.y - event.y) <= radius);
+            targets = units.filter((unit) =>
+              unit.alive &&
+              unit.team !== event.team &&
+              canEngageAt(event.team, unit.x, unit.y) &&
+              Math.hypot(unit.x - event.x, unit.y - event.y) <= radius,
+            );
           for (const target of targets) {
             hurt(target, damage, event.team, false, 0, 1, false, { attacker: definition.name, action: "전술 타격" });
             if (event.faction === "bugborn") target.vulnerableUntil = now + 1500;
           }
           for (const installation of turrets)
-            if (installation.hp > 0 && installation.team !== event.team && Math.hypot(installation.x - event.x, installation.y - event.y) <= radius)
+            if (
+              installation.hp > 0 &&
+              installation.team !== event.team &&
+              canEngageAt(event.team, installation.x, installation.y) &&
+              Math.hypot(installation.x - event.x, installation.y - event.y) <= radius
+            )
               hurtTurret(installation, damage, event.team, false, 0, 1);
           burst(event.x, event.y, definition.color, event.faction === "ai" ? 24 : 14);
           event.hits++;
@@ -2872,6 +3083,7 @@ export default function Seoul999mBelow() {
           if (
             target.alive &&
             target.team !== mine.team &&
+            canEngageAt(mine.team, target.x, target.y) &&
             Math.hypot(target.x - mine.x, target.y - mine.y) <= 1.9
           ) {
             hurt(
@@ -2892,6 +3104,7 @@ export default function Seoul999mBelow() {
           if (
             installation.hp > 0 &&
             installation.team !== mine.team &&
+            canEngageAt(mine.team, installation.x, installation.y) &&
             Math.hypot(installation.x - mine.x, installation.y - mine.y) <= 1.9
           )
             hurtTurret(installation, 70, mine.team, false);
@@ -2902,6 +3115,7 @@ export default function Seoul999mBelow() {
           setMessage(triggeredByEnemy ? "압력 지뢰 접촉 폭발 · 광역 피해" : "압력 지뢰 3초 신관 폭발 · 광역 피해");
       },
       damageBase = (attacker: Team, d: number, source?: Unit) => {
+        if (isSecretTunnel && battlePhase === "prepare") return;
         const campaign1BossSiege = Boolean(
           isCampaign &&
             campaignChapter === 1 &&
@@ -2967,12 +3181,77 @@ export default function Seoul999mBelow() {
         void combatAudio.impact("structure", false, .92);
         if (!ended && (enemyHp <= 0 || allyHp <= 0)) {
           ended = true;
+          if (isSecretTunnel)
+            setMessage(
+              enemyHp <= 0
+                ? "적 코어 파괴 · 비밀 굴착 작전 승리"
+                : "아군 코어 파괴 · 비밀 굴착 작전 패배",
+            );
           setOutcome(enemyHp <= 0 ? "win" : "lose");
         }
       };
     const breakTile = (u: Unit, x: number, y: number, power = 1) => {
         const t = grid[y]?.[x];
-        if (!t || t.type === 0 || t.type === 4) return false;
+        if (!t || t.type === 4 || (!isSecretTunnel && t.type === 0)) return false;
+        if (isSecretTunnel && secretTunnelOverlay) {
+          if (battlePhase !== "prepare") {
+            if (u === hero) setMessage("지반 고정 · 침공 중에는 더 파거나 메울 수 없다");
+            return false;
+          }
+          const result = digSecretTunnelTile(
+            secretTunnelOverlay,
+            { x, y },
+            u.team,
+            power * 1.6,
+          );
+          secretTunnelOverlay = result.overlay;
+          if (!result.didDamage) return false;
+          const digMaterial = t.ore
+              ? "ore"
+              : t.type === 3
+                ? "rock"
+                : [8, 9, 10, 11].includes(t.type)
+                  ? "metal"
+                  : "earth",
+            soundProminence = u === hero
+              ? 1
+              : Math.max(.2, 1 - Math.hypot(u.x - hero.x, u.y - hero.y) / 13);
+          const locallyObservableDig = u.team === "blue" || result.becameShared;
+          if (locallyObservableDig) {
+            burst(
+              x,
+              y,
+              result.becameShared ? "#ffe071" : t.type === 3 ? "#aaa293" : "#966846",
+              result.becameShared ? 16 : 5,
+            );
+            if (u.team === "blue")
+              void combatAudio.dig(digMaterial, result.opened, soundProminence);
+          }
+          if (result.opened) {
+            const oreKey = `${u.team}:${x},${y}`;
+            if (t.ore && !secretOreClaims.has(oreKey)) {
+              secretOreClaims.add(oreKey);
+              reward(t.ore, "광석 발견", u.team);
+              if (u.team === "blue") gainHeroXp(8);
+            }
+            if (result.becameShared) {
+              tone("warning");
+              setMessage("익명의 굴착 진동 감지 · 접촉 격벽은 침공 개시 때 열린다");
+            }
+            const connections = evaluateSecretTunnelConnections(
+              secretTunnelOverlay,
+              { blue: ALLY, red: ENEMY },
+            );
+            const newlyConnected = !secretBlueConnected && connections.blue.valid;
+            secretBlueConnected = connections.blue.valid;
+            secretRedConnected = connections.red.valid;
+            if (newlyConnected) {
+              tone("victory");
+              setMessage("유효 전선 연결 완료 · 남은 시간은 광석·우회로·방어에 투자");
+            }
+          }
+          return result.opened;
+        }
         const digMaterial = t.ore
               ? "ore"
               : t.type === 3
@@ -3013,11 +3292,11 @@ export default function Seoul999mBelow() {
           !t ||
           t.type === 4 ||
           occupied(x, y, u) ||
-          turretAt(x, y) ||
+          turretAt(x, y, u.team) ||
           baseAt(x, y)
         )
           return;
-        if (t.type !== 0) {
+        if (!openForTeam(x, y, u.team)) {
           if (u.role === "hero") breakTile(u, x, y);
           return;
         }
@@ -3041,13 +3320,71 @@ export default function Seoul999mBelow() {
         x: heroWorld.x / S - 0.5,
         y: heroWorld.y / S - 0.5,
       });
+    const applySecretDrillPattern = (
+      attacker: Unit,
+      direction: { x: number; y: number },
+      drillWidthBonus = 0,
+    ) => {
+      const spec = heroKit(attacker.heroId ?? "yoo-seungcheon").drill,
+        bonus = drillWidthBonus > 0 ? 1 : 0,
+        drillWidth = spec.width + bonus,
+        d = gridStep(direction.x, direction.y),
+        safeDirection = d.x || d.y ? d : { x: 1, y: 0 },
+        side = { x: -safeDirection.y, y: safeDirection.x },
+        dig = (x: number, y: number) => {
+          if (grid[y]?.[x]?.type !== 4) breakTile(attacker, x, y, 99);
+        };
+      if (spec.mode === "radial" || spec.mode === "sealRing") {
+        for (const offset of radialDrillOffsets(1 + bonus))
+          dig(attacker.x + offset.x, attacker.y + offset.y);
+      } else if (spec.mode === "sonicCross") {
+        for (const axis of DIRS)
+          for (let n = 1; n <= spec.length; n++)
+            dig(attacker.x + axis.x * n, attacker.y + axis.y * n);
+      } else if (spec.mode === "pipeFork") {
+        for (let n = 1; n <= spec.length; n++) {
+          dig(attacker.x + safeDirection.x * n, attacker.y + safeDirection.y * n);
+          if (n > 2) {
+            dig(attacker.x + safeDirection.x * n + side.x * (n - 2), attacker.y + safeDirection.y * n + side.y * (n - 2));
+            dig(attacker.x + safeDirection.x * n - side.x * (n - 2), attacker.y + safeDirection.y * n - side.y * (n - 2));
+          }
+        }
+      } else if (spec.mode === "blueprint") {
+        for (let n = 1; n <= spec.length; n++) {
+          dig(attacker.x + safeDirection.x * n + side.x * drillWidth, attacker.y + safeDirection.y * n + side.y * drillWidth);
+          dig(attacker.x + safeDirection.x * n - side.x * drillWidth, attacker.y + safeDirection.y * n - side.y * drillWidth);
+        }
+        for (let width = -drillWidth; width <= drillWidth; width++)
+          dig(attacker.x + safeDirection.x * spec.length + side.x * width, attacker.y + safeDirection.y * spec.length + side.y * width);
+      } else if (spec.mode === "sawLine") {
+        let lastX = attacker.x, lastY = attacker.y;
+        for (let n = 1; n <= spec.length; n++) {
+          const offset = n % 2 ? 1 : -1,
+            x = attacker.x + safeDirection.x * n + side.x * offset,
+            y = attacker.y + safeDirection.y * n + side.y * offset;
+          dig(attacker.x + safeDirection.x * n, attacker.y + safeDirection.y * n);
+          dig(x, y);
+          if (Math.abs(x - lastX) + Math.abs(y - lastY) > 1)
+            dig(
+              attacker.x + safeDirection.x * n + side.x * (n % 2 ? 0 : -1),
+              attacker.y + safeDirection.y * n + side.y * (n % 2 ? 0 : -1),
+            );
+          lastX = x;
+          lastY = y;
+        }
+      } else {
+        for (let n = 1; n <= spec.length; n++)
+          for (let width = -drillWidth; width <= drillWidth; width++)
+            dig(attacker.x + safeDirection.x * n + side.x * width, attacker.y + safeDirection.y * n + side.y * width);
+      }
+    };
     const heroTerrainClear = (px: number, py: number) => {
       const radius = 8;
       for (const ox of [-radius, radius])
         for (const oy of [-radius, radius]) {
           const tx = Math.floor((px + ox) / S),
             ty = Math.floor((py + oy) / S);
-          if (!open(tx, ty)) return false;
+          if (!openForTeam(tx, ty, "blue")) return false;
         }
       return true;
     };
@@ -3055,12 +3392,14 @@ export default function Seoul999mBelow() {
       if (!heroTerrainClear(px, py)) return false;
       for (const u of units)
         if (u !== hero && u.alive) {
+          if (isSecretTunnel && battlePhase === "prepare" && u.team !== hero.team) continue;
           const p = unitWorld(u);
           if (Math.hypot(p.x - px, p.y - py) < 20) return false;
         }
       for (const t of turrets)
         if (
           t.hp > 0 &&
+          !(isSecretTunnel && battlePhase === "prepare" && t.team !== hero.team) &&
           Math.hypot(t.x * S + S / 2 - px, t.y * S + S / 2 - py) < 22
         )
           return false;
@@ -3113,7 +3452,7 @@ export default function Seoul999mBelow() {
       return (
         !!tile &&
         Math.max(Math.abs(tx - hero.x), Math.abs(ty - hero.y)) === 1 &&
-        tile.type !== 0 &&
+        !openForTeam(tx, ty, "blue") &&
         tile.type !== 4
       );
     };
@@ -3204,7 +3543,11 @@ export default function Seoul999mBelow() {
         for (let dist = 6; dist <= reach; dist += 6) {
           const tx = Math.floor((heroWorld.x + d.x * dist) / S),
             ty = Math.floor((heroWorld.y + d.y * dist) / S);
-          if (grid[ty]?.[tx]?.type !== 0) {
+          if (
+            isSecretTunnel
+              ? !openForTeam(tx, ty, "blue")
+              : grid[ty]?.[tx]?.type !== 0
+          ) {
             reach = Math.max(0, dist - 6);
             break;
           }
@@ -3262,7 +3605,13 @@ export default function Seoul999mBelow() {
           ? Math.max(1.5, playerDef.stats.range) * S
           : (hit.variant === "coreSiege" ? Math.max(1.5, combatRangeFor(u)) : 1.5) * S,
         candidates = units
-          .filter((v) => v.alive && v.campaignActivated !== false && v.team !== u.team)
+          .filter((v) =>
+            v.alive &&
+            v.networkVisible !== false &&
+            v.campaignActivated !== false &&
+            v.team !== u.team &&
+            canEngageAt(u.team, v.x, v.y),
+          )
           .map((v) => {
             const p = unitWorld(v),
               dx = p.x - origin.x,
@@ -3309,9 +3658,9 @@ export default function Seoul999mBelow() {
           const nx = target.x + Math.sign(target.x - u.x),
             ny = target.y + Math.sign(target.y - u.y);
           if (
-            open(nx, ny) &&
+            openForTeam(nx, ny, target.team) &&
             !occupied(nx, ny, target) &&
-            !turretAt(nx, ny) &&
+            !turretAt(nx, ny, target.team) &&
             !baseAt(nx, ny)
           ) {
             target.x = nx;
@@ -3327,7 +3676,7 @@ export default function Seoul999mBelow() {
         return;
       }
       for (const t of turrets)
-        if (t.hp > 0 && t.team !== u.team) {
+        if (t.hp > 0 && t.team !== u.team && canEngageAt(u.team, t.x, t.y)) {
           const dx = t.x * S + S / 2 - origin.x,
             dy = t.y * S + S / 2 - origin.y,
             dist = Math.hypot(dx, dy),
@@ -3352,7 +3701,7 @@ export default function Seoul999mBelow() {
         dy = enemyBase.y * S + S / 2 - origin.y,
         dist = Math.hypot(dx, dy),
         facing = dist ? (dx / dist) * hit.dir.x + (dy / dist) * hit.dir.y : 1;
-      if (dist <= range && facing >= 0.35)
+      if (dist <= range && facing >= 0.35 && canEngageAt(u.team, enemyBase.x, enemyBase.y))
         damageBase(u.team, u.attack + hit.bonus, u);
     };
     const updateMeleeHits = (dt: number) => {
@@ -3426,7 +3775,7 @@ export default function Seoul999mBelow() {
             const p = unitWorld(u);
             if (
               Math.hypot(p.x - cx, p.y - cy) <= radius * S &&
-              clearRay(tx, ty, u.x, u.y)
+              clearRay(tx, ty, u.x, u.y, s.team)
             ) {
               hurt(
                 u,
@@ -3454,7 +3803,7 @@ export default function Seoul999mBelow() {
             t.hp > 0 &&
             t.team !== s.team &&
             Math.hypot(t.x - tx, t.y - ty) <= radius &&
-            clearRay(tx, ty, t.x, t.y)
+            clearRay(tx, ty, t.x, t.y, s.team)
           )
             hurtTurret(t, s.damage, s.team, false);
         if (s.kind === "spore" && s.sourceInstallation) {
@@ -3479,7 +3828,7 @@ export default function Seoul999mBelow() {
         }
       };
     const heroDamageSource = (action = "기술") => ({ attacker: hero.name, action, unit: hero }),
-      enemyActors = () => units.filter((u) => u.alive && u.team === "red"),
+      enemyActors = () => units.filter((u) => u.alive && u.networkVisible !== false && u.team === "red"),
       healArea = (radius: number, amount: number) => {
         amount *= talentBonuses().healMultiplier;
         hero.hp = Math.min(hero.maxHp, hero.hp + amount);
@@ -3533,6 +3882,7 @@ export default function Seoul999mBelow() {
         stun = 0,
         push = 0,
       ) => {
+        if (isSecretTunnel && battlePhase === "prepare") return;
         for (const u of enemyActors()) {
           const dx = u.x - hero.x,
             dy = u.y - hero.y,
@@ -3558,9 +3908,9 @@ export default function Seoul999mBelow() {
               const nx = Math.max(1, Math.min(COLS - 2, u.x + Math.sign(dx))),
                 ny = Math.max(1, Math.min(ROWS - 2, u.y + Math.sign(dy)));
               if (
-                open(nx, ny) &&
+                openForTeam(nx, ny, u.team) &&
                 !occupied(nx, ny, u) &&
-                !turretAt(nx, ny) &&
+                !turretAt(nx, ny, u.team) &&
                 !baseAt(nx, ny)
               ) {
                 u.x = nx;
@@ -3686,8 +4036,12 @@ export default function Seoul999mBelow() {
               speed = f.speed ?? 2,
               nx = f.x + (d.x * speed * dt) / 1000,
               ny = f.y + (d.y * speed * dt) / 1000,
-              tile = grid[Math.floor(ny)]?.[Math.floor(nx)];
-            if (!tile || tile.type !== 0) {
+              tileX = Math.floor(nx),
+              tileY = Math.floor(ny),
+              passable = isSecretTunnel
+                ? openForTeam(tileX, tileY, f.team ?? "blue")
+                : grid[tileY]?.[tileX]?.type === 0;
+            if (!passable) {
               f.life = 0;
               continue;
             }
@@ -3726,9 +4080,9 @@ export default function Seoul999mBelow() {
                 const ux = u.x + Math.sign(d.x),
                   uy = u.y + Math.sign(d.y);
                 if (
-                  open(ux, uy) &&
+                  openForTeam(ux, uy, u.team) &&
                   !occupied(ux, uy, u) &&
-                  !turretAt(ux, uy) &&
+                  !turretAt(ux, uy, u.team) &&
                   !baseAt(ux, uy)
                 ) {
                   u.x = ux;
@@ -3768,7 +4122,9 @@ export default function Seoul999mBelow() {
                   installation: f.sourceInstallation,
                 }
               : heroDamageSource(action);
-          for (const u of units.filter((unit) => unit.alive && unit.team !== fieldTeam))
+          for (const u of units.filter((unit) =>
+            unit.alive && unit.team !== fieldTeam && canEngageAt(fieldTeam, unit.x, unit.y),
+          ))
             if (Math.hypot(u.x - f.x, u.y - f.y) <= f.radius) {
               if (f.kind === "web") {
                 u.act = Math.max(u.act, 460);
@@ -3992,7 +4348,7 @@ export default function Seoul999mBelow() {
           );
           const nx = hero.x + Math.sign(target.x - hero.x),
             ny = hero.y + Math.sign(target.y - hero.y);
-          if (open(nx, ny) && !occupied(nx, ny, target)) {
+          if (openForTeam(nx, ny, target.team) && !occupied(nx, ny, target)) {
             target.x = nx;
             target.y = ny;
           }
@@ -4061,6 +4417,10 @@ export default function Seoul999mBelow() {
     };
     const blueDrillBurst = () => {
       if (cd3 > 0 || !hero.alive) return;
+      if (isSecretTunnel && battlePhase !== "prepare") {
+        setMessage("지반 고정 · 4번 굴착은 준비 단계에서만 사용 가능");
+        return;
+      }
       const spec = kit.drill,
         bonuses = talentBonuses(),
         drillWidth = spec.width + bonuses.drillWidthBonus,
@@ -4069,7 +4429,9 @@ export default function Seoul999mBelow() {
         dig = (x: number, y: number) => {
           if (grid[y]?.[x]?.type !== 4) breakTile(hero, x, y, 99);
         };
-      if (spec.mode === "radial") {
+      if (isSecretTunnel) {
+        applySecretDrillPattern(hero, d, bonuses.drillWidthBonus);
+      } else if (spec.mode === "radial") {
         const radialWidth = 1 + bonuses.drillWidthBonus;
         for (const offset of radialDrillOffsets(radialWidth))
           dig(hero.x + offset.x, hero.y + offset.y);
@@ -4078,9 +4440,9 @@ export default function Seoul999mBelow() {
           for (let x = -1; x <= 1; x++) {
             if (
               (x || y) &&
-              open(hero.x + x, hero.y + y) &&
+              openForTeam(hero.x + x, hero.y + y, "blue") &&
               !occupied(hero.x + x, hero.y + y) &&
-              !turretAt(hero.x + x, hero.y + y)
+              !turretAt(hero.x + x, hero.y + y, hero.team)
             ) {
               grid[hero.y + y][hero.x + x] = {
                 type: 5,
@@ -4164,7 +4526,15 @@ export default function Seoul999mBelow() {
       });
       signatureFx(spec.mode, hero.dir, 2.1, 900);
       hero.act = 980;
-      cd3 = spec.cooldown * bonuses.drillCooldownMultiplier;
+      cd3 = spec.cooldown * bonuses.drillCooldownMultiplier * (isSecretTunnel ? 0.5 : 1);
+      const onlineDrillDirection = d.x || d.y ? d : hero.dir.x || hero.dir.y ? hero.dir : { x: 1, y: 0 };
+      publishOnlineInput({
+        type: "drill",
+        dx: onlineDrillDirection.x,
+        dy: onlineDrillDirection.y,
+        drillWidthBonus: bonuses.drillWidthBonus > 0 ? 1 : 0,
+        drillCooldownMultiplier: bonuses.drillCooldownMultiplier === 0.68 ? 0.68 : 1,
+      });
       void combatAudio.skillCue(playerDef.id, 3, 1, 4);
       tone("blast");
       burst(hero.x, hero.y, kit.color, 32);
@@ -4305,6 +4675,11 @@ export default function Seoul999mBelow() {
             ty = Math.floor(py / S),
             tile = grid[ty]?.[tx];
           if (!tile || tile.type === 4) break;
+          if (isSecretTunnel) {
+            if (!openForTeam(tx, ty, hero.team)) break;
+            travel = dist;
+            continue;
+          }
           if (tile.type !== 0) breakTile(hero, tx, ty, 99);
           travel = dist;
         }
@@ -4442,6 +4817,7 @@ export default function Seoul999mBelow() {
         if (!hero.alive || survivalCd > 0) return;
         const type = survivalType(),
           now = performance.now(),
+          onlineTarget = cursorWorld(),
           startWorld = { x: heroWorld.x, y: heroWorld.y },
           start = { ...heroFxPos() };
         if (type === "회복") {
@@ -4462,11 +4838,10 @@ export default function Seoul999mBelow() {
           spawnField("repair", start.x, start.y, 1.35, 800, 0, kit.color);
           playHeroAnim("whirlwind", 480, 2);
         } else if (type === "점프") {
-          const w = cursorWorld(),
-            d = unitVector(w.x - heroWorld.x, w.y - heroWorld.y),
+          const d = unitVector(onlineTarget.x - heroWorld.x, onlineTarget.y - heroWorld.y),
             maxDistance = Math.min(
               3 * S,
-              Math.hypot(w.x - heroWorld.x, w.y - heroWorld.y),
+              Math.hypot(onlineTarget.x - heroWorld.x, onlineTarget.y - heroWorld.y),
             );
           let landing: { x: number; y: number } | null = null;
           for (
@@ -4547,15 +4922,22 @@ export default function Seoul999mBelow() {
         if (type === "회복") tone("item");
         else if (type === "방어") tone("shield");
         else tone("evade");
+        publishOnlineInput({
+          type: "survival",
+          x: Math.floor(onlineTarget.x / S),
+          y: Math.floor(onlineTarget.y / S),
+        });
         setMessage(`${playerDef.name} 생존기 · ${type}`);
       },
       fillPlacementError = (x: number, y: number) => {
+        if (isSecretTunnel && battlePhase !== "prepare")
+          return "지반 고정 · 침공 중에는 땅을 메울 수 없다";
         if (Math.hypot(x - hero.x, y - hero.y) > 2.25)
           return "영웅 반경 2칸 안만 메울 수 있다";
         if (!visible(x, y)) return "현재 시야 안의 땅만 메울 수 있다";
         if (Math.hypot(x - ENEMY.x, y - ENEMY.y) < 3)
           return "적 코어 근처에서는 땅을 메울 수 없다";
-        if (!open(x, y)) return "열린 땅만 메울 수 있다";
+        if (!openForTeam(x, y, "blue")) return "열린 땅만 메울 수 있다";
         if (occupied(x, y) || turretAt(x, y) || baseAt(x, y))
           return "다른 대상이 있는 칸은 메울 수 없다";
         if (money < 15) return "땅 메우기 · 15 크레딧 필요";
@@ -4563,6 +4945,10 @@ export default function Seoul999mBelow() {
       },
       toggleFillMode = () => {
         if (!hero.alive) return;
+        if (isSecretTunnel && battlePhase !== "prepare") {
+          setMessage("지반 고정 · 침공 중에는 땅을 메울 수 없다");
+          return;
+        }
         if (buildMode !== "none") selectBuildMode("none");
         aimingSkill = 0;
         setSelected(0);
@@ -4587,6 +4973,26 @@ export default function Seoul999mBelow() {
           return;
         }
         money -= 15;
+        if (isSecretTunnel && secretTunnelOverlay) {
+          const sealed = sealSecretTunnelTileForTeam(
+            secretTunnelOverlay,
+            { x, y },
+            hero.team,
+            { blue: ALLY, red: ENEMY },
+          );
+          if (!sealed.sealed) {
+            money += 15;
+            setMessage(sealed.blockedReason === "core" ? "코어 지반은 메울 수 없다" : "메울 굴착 흔적이 없다");
+            return;
+          }
+          secretTunnelOverlay = sealed.overlay;
+          const connections = evaluateSecretTunnelConnections(
+            secretTunnelOverlay,
+            { blue: ALLY, red: ENEMY },
+          );
+          secretBlueConnected = connections.blue.valid;
+          secretRedConnected = connections.red.valid;
+        }
         grid[y][x] = {
           type: 5,
           hp: 2,
@@ -4621,6 +5027,10 @@ export default function Seoul999mBelow() {
       },
       activateItem = (slot: number) => {
         if (!hero.alive) return;
+        if (activeMatchConfig?.kind === "online") {
+          setMessage("온라인 동기화 대전에서는 개인 소비 아이템을 사용할 수 없다");
+          return;
+        }
         const item = itemSlots[slot];
         if (!item) {
           setMessage("빈 아이템 슬롯 · 전투 편성에서 장착 가능");
@@ -4632,8 +5042,7 @@ export default function Seoul999mBelow() {
             t = grid[y]?.[x];
           if (
             !t ||
-            t.type !== 0 ||
-            t.type === 4 ||
+            !openForTeam(x, y, hero.team) ||
             groundMines.some((mine) => mine.x === x && mine.y === y)
           ) {
             setMessage("열린 땅의 현재 발밑에만 지뢰를 설치할 수 있다");
@@ -4704,7 +5113,7 @@ export default function Seoul999mBelow() {
             for (let x = hero.x - 8; x <= hero.x + 8; x++)
               if (seen[y]?.[x] !== undefined && Math.hypot(x - hero.x, y - hero.y) <= 8) {
                 seen[y][x] = true;
-                memory[y][x] = { ...grid[y][x] };
+                memory[y][x] = { ...tileForLocalTunnelView(x, y) };
               }
           tone("item");
           tone("warning");
@@ -4774,7 +5183,7 @@ export default function Seoul999mBelow() {
       },
       preservesExitPath = (blockX: number, blockY: number) => {
         const starts = spawnCells.filter(
-          (p) => open(p.x, p.y) && !(p.x === blockX && p.y === blockY),
+          (p) => openForTeam(p.x, p.y, "blue") && !(p.x === blockX && p.y === blockY),
         );
         if (!starts.length) return false;
         const q = [...starts],
@@ -4788,7 +5197,7 @@ export default function Seoul999mBelow() {
               k = `${x},${y}`;
             if (
               seenPath.has(k) ||
-              !open(x, y) ||
+              !openForTeam(x, y, "blue") ||
               (x === blockX && y === blockY) ||
               turretAt(x, y) ||
               baseAt(x, y)
@@ -4811,7 +5220,7 @@ export default function Seoul999mBelow() {
           supports = all.filter((t) => isSupport(t.kind)).length;
         if (dist < 2 || dist > 6) return "붉은 설치 한계선 안쪽만 가능";
         if (!visible(x, y)) return "현재 시야 안에서만 건설 가능";
-        if (!open(x, y)) return "열린 땅굴에만 건설 가능";
+        if (!openForTeam(x, y, "blue")) return "열린 땅굴에만 건설 가능";
         if (baseAt(x, y) || turretAt(x, y) || occupied(x, y))
           return "다른 대상과 겹쳐 건설할 수 없음";
         if (spawnCells.some((p) => p.x === x && p.y === y))
@@ -4830,7 +5239,7 @@ export default function Seoul999mBelow() {
         turrets.filter((t) => t.team === "red" && t.built && !t.starter && t.hp > 0),
       preservesEnemyExitPath = (blockX: number, blockY: number) => {
         const starts = DIRS.map((d) => ({ x: ENEMY.x + d.x, y: ENEMY.y + d.y }))
-          .filter((p) => open(p.x, p.y) && !(p.x === blockX && p.y === blockY));
+          .filter((p) => openForTeam(p.x, p.y, "red") && !(p.x === blockX && p.y === blockY));
         if (!starts.length) return false;
         const q = [...starts], visited = new Set(q.map((p) => `${p.x},${p.y}`));
         for (let i = 0; i < q.length; i++) {
@@ -4838,7 +5247,7 @@ export default function Seoul999mBelow() {
           if (Math.hypot(p.x - ENEMY.x, p.y - ENEMY.y) >= 4.5) return true;
           for (const d of DIRS) {
             const x = p.x + d.x, y = p.y + d.y, key = `${x},${y}`;
-            if (visited.has(key) || !open(x, y) || (x === blockX && y === blockY) || turretAt(x, y) || baseAt(x, y)) continue;
+            if (visited.has(key) || !openForTeam(x, y, "red") || (x === blockX && y === blockY) || turretAt(x, y) || baseAt(x, y)) continue;
             visited.add(key);
             q.push({ x, y });
           }
@@ -4865,7 +5274,11 @@ export default function Seoul999mBelow() {
           supportCount = builds.filter((t) => isSupport(t.kind)).length,
           buildCapped = builds.length >= 6 || (attackCount >= 3 && wallCount >= 3 && supportCount >= 1);
         const threats = units
-            .filter((u) => u.alive && u.team === "blue")
+            .filter((u) =>
+              u.alive &&
+              u.team === "blue" &&
+              !(isSecretTunnel && battlePhase === "prepare"),
+            )
             .map((u) => ({ unit: u, dist: Math.hypot(u.x - ENEMY.x, u.y - ENEMY.y) }))
             .sort((a, b) => a.dist - b.dist),
           nearest = threats[0],
@@ -4883,7 +5296,10 @@ export default function Seoul999mBelow() {
           def = supportChoice ?? affordable[0] ?? defs
             .filter((candidate) => candidate.cost <= enemyBuildCredits)
             .sort((a, b) => b.cost - a.cost)[0];
-        if (performance.now() >= tacticalStates.red.cooldownUntil) {
+        if (
+          !(isSecretTunnel && battlePhase === "prepare") &&
+          performance.now() >= tacticalStates.red.cooldownUntil
+        ) {
           const redFront = units.filter((unit) => unit.alive && unit.team === "red" && unit.role === "minion"),
             blueCluster = nearest ? threats.filter((entry) => Math.hypot(entry.unit.x - nearest.unit.x, entry.unit.y - nearest.unit.y) <= 2.5).length : 0,
             engaged = redFront.filter((unit) => units.some((target) => target.alive && target.team === "blue" && Math.hypot(target.x - unit.x, target.y - unit.y) <= 4)).length,
@@ -4915,9 +5331,9 @@ export default function Seoul999mBelow() {
                 y,
                 builds.map((t) => ({ x: t.x, y: t.y, isBlocker: isBlocker(t.kind) || isSupport(t.kind) })),
               );
-            if (distance < 2 || distance > 6 || !open(x, y) || baseAt(x, y) || turretAt(x, y) || occupied(x, y) || cost > enemyBuildCredits) continue;
+            if (distance < 2 || distance > 6 || !openForTeam(x, y, "red") || baseAt(x, y) || turretAt(x, y, "red") || occupied(x, y, undefined, "red") || cost > enemyBuildCredits) continue;
             if ((def.category === "blocker" || def.category === "support") && !preservesEnemyExitPath(x, y)) continue;
-            const openSides = DIRS.filter((d) => open(x + d.x, y + d.y)).length,
+            const openSides = DIRS.filter((d) => openForTeam(x + d.x, y + d.y, "red")).length,
               coverage = threats.filter((entry) => Math.hypot(entry.unit.x - x, entry.unit.y - y) <= def.range).length,
               chokeBonus = def.category === "blocker" ? (openSides === 2 ? 5 : openSides === 3 ? 2 : 0) : coverage * 4;
             candidates.push({ x, y, cost, score: 20 - Math.hypot(x - anchor.x, y - anchor.y) * 3 + chokeBonus - (cost - def.cost) * 0.08 });
@@ -4930,7 +5346,7 @@ export default function Seoul999mBelow() {
         turrets.push(createBuildableUnit({ id: buildId++, x: spot.x, y: spot.y, team: "red", kind: def.id, cool: 300, cost: spot.cost }));
         enemyBuildCredits -= spot.cost;
         enemyBuildClock = urgent ? 5200 : 7800;
-        if (visible(spot.x, spot.y)) {
+        if (!(isSecretTunnel && battlePhase === "prepare") && visible(spot.x, spot.y)) {
           setMessage(`적 건설 감지 · ${def.name} · ${urgent ? "이 길목을 차단한다" : "이 전선을 엄호한다"}`);
           tone("warning");
           burst(spot.x, spot.y, FACTIONS[enemyFaction].color, 18);
@@ -5012,6 +5428,7 @@ export default function Seoul999mBelow() {
         }
         money -= cost;
         target.upgrade = { remaining: 1500, cost };
+        publishOnlineInput({ type: "upgrade", x, y });
         setMessage(`${def.short} 2레벨 강화 시작 · 피격 시 취소`);
       },
       startDemolitionAt = (x: number, y: number) => {
@@ -5025,6 +5442,7 @@ export default function Seoul999mBelow() {
           return;
         }
         target.demolish = 1000;
+        publishOnlineInput({ type: "demolish", x, y });
         setMessage(`${buildDef(target.kind).name} 해체 시작 · 피격 시 취소`);
       },
       updateBuildWork = (dt: number) => {
@@ -5059,8 +5477,16 @@ export default function Seoul999mBelow() {
         }
       };
     const nearestEnemy = (u: Unit, range = 99) =>
-        units
-          .filter((v) => v.alive && v.campaignActivated !== false && v.team !== u.team)
+        isSecretTunnel && battlePhase === "prepare"
+          ? undefined
+          : units
+          .filter((v) =>
+            v.alive &&
+            v.networkVisible !== false &&
+            v.campaignActivated !== false &&
+            v.team !== u.team &&
+            canEngageAt(u.team, v.x, v.y),
+          )
           .sort(
             (a, b) =>
               Math.hypot(a.x - u.x, a.y - u.y) -
@@ -5068,8 +5494,15 @@ export default function Seoul999mBelow() {
           )
           .find((v) => Math.hypot(v.x - u.x, v.y - u.y) <= range),
       nearestEnemyTurret = (u: Unit, range = 99) =>
-        turrets
-          .filter((t) => t.hp > 0 && t.campaignActivated !== false && t.team !== u.team)
+        isSecretTunnel && battlePhase === "prepare"
+          ? undefined
+          : turrets
+          .filter((t) =>
+            t.hp > 0 &&
+            t.campaignActivated !== false &&
+            t.team !== u.team &&
+            canEngageAt(u.team, t.x, t.y),
+          )
           .sort(
             (a, b) =>
               Math.abs(a.x - u.x) +
@@ -5077,28 +5510,34 @@ export default function Seoul999mBelow() {
               (Math.abs(b.x - u.x) + Math.abs(b.y - u.y)),
           )
           .find((t) => Math.abs(t.x - u.x) + Math.abs(t.y - u.y) <= range),
-      clearRay = (ax: number, ay: number, bx: number, by: number) => {
+      clearRay = (ax: number, ay: number, bx: number, by: number, team: Team = "blue") => {
+        if (isSecretTunnel && (!openForTeam(ax, ay, team) || !openForTeam(bx, by, team)))
+          return false;
         const dist = Math.hypot(bx - ax, by - ay),
           steps = Math.ceil(dist * 4);
         for (let i = 1; i < steps; i++) {
           const x = Math.floor(ax + ((bx - ax) * i) / steps),
             y = Math.floor(ay + ((by - ay) * i) / steps);
           if ((x === ax && y === ay) || (x === bx && y === by)) continue;
-          if (!open(x, y)) return false;
+          if (!openForTeam(x, y, team)) return false;
         }
         return true;
       };
     const routePathCells = (
       start: { x: number; y: number },
       goal: { x: number; y: number },
-    ) => shortestRouteToAny(start, [goal], open)?.cells ?? [];
+      team: Team = "blue",
+    ) => shortestRouteToAny(start, [goal], (x, y) => openForTeam(x, y, team))?.cells ?? [];
     const routeTravelPoints = (route: MarchRoute) =>
         route.plannedCells.length ? route.plannedCells : route.points,
       activeRouteIds = (team: Team = "blue") =>
         (["A", "B"] as RouteId[]).filter((id) => teamMarchRoutes[team][id].points.length),
       chooseSpawnRoute = (team: Team, index: number) => {
         const active = activeRouteIds(team);
-        return active.length === 2 ? active[(index + wave) % 2] : active[0];
+        if (active.length !== 2) return active[0];
+        return isSecretTunnel
+          ? chooseSecretTunnelRoute(index + wave * 4, tunnelAllocations[team])
+          : active[(index + wave) % 2];
       },
       assignAvailableRoute = (u: Unit) => {
         const active = activeRouteIds(u.team);
@@ -5131,7 +5570,11 @@ export default function Seoul999mBelow() {
           u.routeId = active[index % active.length];
         const route = teamMarchRoutes[team][u.routeId],
           routePoints = routeTravelPoints(route),
-          nearest = shortestRouteToAny(u, routePoints, open),
+          nearest = shortestRouteToAny(
+            u,
+            routePoints,
+            (x, y) => openForTeam(x, y, team),
+          ),
           nearestIndex = nearest
             ? routePoints.findIndex(
                 (point) => point.x === nearest.goal.x && point.y === nearest.goal.y,
@@ -5222,8 +5665,8 @@ export default function Seoul999mBelow() {
           avoidedCells = otherRoute.points.length
             ? [{ ...base }, ...routeTravelPoints(otherRoute)]
             : [],
-          plan = open(x, y)
-            ? diverseRouteToGoal(base, target, open, avoidedCells, {
+          plan = openForTeam(x, y, team)
+            ? diverseRouteToGoal(base, target, (px, py) => openForTeam(px, py, team), avoidedCells, {
                 sharedStartRadius: 1,
                 sharedGoalRadius: 1,
                 hardAvoidRadius: 2,
@@ -5296,10 +5739,85 @@ export default function Seoul999mBelow() {
       setRouteStances((current) => ({ ...current, [id]: stance }));
       setMessage(`${id} 분대 · ${stance === "assault" ? "돌격" : stance === "guard" ? "경계" : "점령"} 명령`);
     };
-    const pathDistanceMapToGoals = (goals: readonly GridPoint[]) => {
+    const finishSecretTunnelBattle = (
+        winner: Team | null,
+        messageText: string,
+      ) => {
+        if (ended) return;
+        battlePhase = "finished";
+        battlePhaseTimeLeft = 0;
+        battlePhaseEndsAt = 0;
+        ended = true;
+        setOutcome(winner === null ? "draw" : winner === "blue" ? "win" : "lose");
+        setMessage(messageText);
+      },
+      enterSecretTunnelAssault = () => {
+        if (!secretTunnelOverlay || battlePhase !== "prepare") return;
+        const connections = evaluateSecretTunnelConnections(
+            secretTunnelOverlay,
+            { blue: ALLY, red: ENEMY },
+          ),
+          resolution = resolveSecretTunnelPreparation(connections);
+        secretBlueConnected = connections.blue.valid;
+        secretRedConnected = connections.red.valid;
+        if (resolution.phase === "finished") {
+          finishSecretTunnelBattle(
+            resolution.winner,
+            resolution.reason === "blue-isolated"
+              ? "굴착 작전 실패 · 아군 고립 패배"
+              : resolution.reason === "red-isolated"
+                ? "적 굴착망 고립 · 준비 단계 승리"
+                : "쌍방 작전 실패 · 무승부",
+          );
+          return;
+        }
+        const contact = selectSecretTunnelContact(
+          secretTunnelOverlay,
+          { blue: ALLY, red: ENEMY },
+        )?.contact ?? connections.blue.contact ?? connections.red.contact;
+        if (contact) {
+          const shared = shareSecretTunnelBackbone(
+            secretTunnelOverlay,
+            { blue: ALLY, red: ENEMY },
+            contact,
+          );
+          if (shared.connected) {
+            secretTunnelOverlay = shared.overlay;
+            burst(contact.x, contact.y, "#ffe071", 26);
+          }
+        }
+        battlePhase = "assault";
+        battlePhaseEndsAt = activeMatchConfig?.kind === "online"
+          ? onlineRoom?.matchEndsAt ?? Date.now() + SECRET_TUNNEL_ASSAULT_MS
+          : 0;
+        battlePhaseTimeLeft = activeMatchConfig?.kind === "online"
+          ? Math.max(0, battlePhaseEndsAt - Date.now())
+          : SECRET_TUNNEL_ASSAULT_MS;
+        spawnClock = 0;
+        fillMode = false;
+        routeEdit = null;
+        for (let y = 0; y < ROWS; y++)
+          for (let x = 0; x < COLS; x++)
+            if (canTraverseSecretTunnel(secretTunnelOverlay, { x, y }, "blue")) {
+              seen[y][x] = true;
+              memory[y][x] = { ...tileForLocalTunnelView(x, y) };
+            }
+        applyTeamRouteTarget("blue", "A", ENEMY.x, ENEMY.y);
+        applyTeamRouteTarget("blue", "B", ENEMY.x, ENEMY.y);
+        applyTeamRouteTarget("red", "A", ALLY.x, ALLY.y);
+        applyTeamRouteTarget("red", "B", ALLY.x, ALLY.y);
+        for (const team of ["blue", "red"] as Team[])
+          for (const id of ["A", "B"] as RouteId[])
+            teamMarchRoutes[team][id].stance = "assault";
+        setRouteStances({ A: "assault", B: "assault" });
+        tone("warning");
+        burst(ALLY.x, ALLY.y, "#58e5ef", 34);
+        setMessage("지반 고정 · 침공 개시 · A/B 공격로 스캔 완료");
+      };
+    const pathDistanceMapToGoals = (goals: readonly GridPoint[], team: Team = "blue") => {
       const distances = new Map<string, number>(),
         queue = goals.filter((goal, index) =>
-          open(goal.x, goal.y) &&
+          openForTeam(goal.x, goal.y, team) &&
           goals.findIndex((candidate) => candidate.x === goal.x && candidate.y === goal.y) === index,
         );
       for (const goal of queue) distances.set(`${goal.x},${goal.y}`, 0);
@@ -5310,20 +5828,20 @@ export default function Seoul999mBelow() {
           const x = p.x + d.x,
             y = p.y + d.y,
             key = `${x},${y}`;
-          if (distances.has(key) || !open(x, y)) continue;
+          if (distances.has(key) || !openForTeam(x, y, team)) continue;
           distances.set(key, distance + 1);
           queue.push({ x, y });
         }
       }
       return distances;
     },
-      pathDistanceMap = (goal: { x: number; y: number }) => pathDistanceMapToGoals([goal]),
+      pathDistanceMap = (goal: { x: number; y: number }, team: Team = "blue") => pathDistanceMapToGoals([goal], team),
       pathPlanToGoals = (u: Unit, goals: readonly GridPoint[]) => {
-      const route = shortestRouteToAny(u, goals, open);
+      const route = shortestRouteToAny(u, goals, (x, y) => openForTeam(x, y, u.team));
       if (!route) return null;
       if (route.distance === 0)
         return { distance: 0, step: null as GridPoint | null, goal: route.goal };
-      const distances = pathDistanceMapToGoals(goals),
+      const distances = pathDistanceMapToGoals(goals, u.team),
         currentDistance = distances.get(`${u.x},${u.y}`),
         detourAllowance = minionCombatDetourAllowance(
           u.role === "minion" ? u.minionRole : undefined,
@@ -5349,10 +5867,10 @@ export default function Seoul999mBelow() {
                 Math.abs(v.x - x) + Math.abs(v.y - y) <= 1,
             ).length,
             reserved = marchReservations.has(`${x},${y}`),
-            space = DIRS.filter((n) => open(x + n.x, y + n.y)).length,
+            space = DIRS.filter((n) => openForTeam(x + n.x, y + n.y, u.team)).length,
             cross = toward.x * d.y - toward.y * d.x,
             sideBias = (u.formationSide ?? 0) * Math.sign(cross),
-            blocked = occupied(x, y, u) || turretAt(x, y) || baseAt(x, y) || reserved;
+            blocked = occupied(x, y, u) || turretAt(x, y, u.team) || baseAt(x, y) || reserved;
           if (blocked) return null;
           return {
             d,
@@ -5381,7 +5899,7 @@ export default function Seoul999mBelow() {
       };
     },
       companionSidestepStepToGoals = (u: Unit, goals: readonly GridPoint[]) => {
-        const distances = pathDistanceMapToGoals(goals),
+        const distances = pathDistanceMapToGoals(goals, u.team),
           currentDistance = distances.get(`${u.x},${u.y}`);
         if (currentDistance === undefined) return null;
         const candidates = DIRS.map((direction) => {
@@ -5389,8 +5907,8 @@ export default function Seoul999mBelow() {
             y = u.y + direction.y,
             distance = distances.get(`${x},${y}`);
           if (
-            distance === undefined || distance > currentDistance + 1 || !open(x, y) ||
-            occupied(x, y, u) || turretAt(x, y) || baseAt(x, y) ||
+            distance === undefined || distance > currentDistance + 1 || !openForTeam(x, y, u.team) ||
+            occupied(x, y, u) || turretAt(x, y, u.team) || baseAt(x, y) ||
             marchReservations.has(`${x},${y}`)
           ) return null;
           const crowd = units.filter(
@@ -5398,7 +5916,7 @@ export default function Seoul999mBelow() {
                 ally !== u && ally.alive && ally.team === u.team &&
                 Math.abs(ally.x - x) + Math.abs(ally.y - y) <= 1,
             ).length,
-            exits = DIRS.filter((exit) => open(x + exit.x, y + exit.y)).length;
+            exits = DIRS.filter((exit) => openForTeam(x + exit.x, y + exit.y, u.team)).length;
           return {
             direction,
             score: distance * 30 + crowd * 18 - exits * 4 + ((u.id + x * 7 + y * 11) % 5),
@@ -5430,11 +5948,11 @@ export default function Seoul999mBelow() {
           target,
           range,
           (x, y) =>
-            open(x, y) &&
+            openForTeam(x, y, attacker.team) &&
             (!occupied(x, y, attacker) || (x === attacker.x && y === attacker.y)) &&
-            !turretAt(x, y) &&
+            !turretAt(x, y, attacker.team) &&
             !baseAt(x, y),
-          (from, to) => clearRay(from.x, from.y, to.x, to.y),
+          (from, to) => clearRay(from.x, from.y, to.x, to.y, attacker.team),
         );
         return pathPlanToGoals(attacker, goals);
       },
@@ -5444,10 +5962,10 @@ export default function Seoul999mBelow() {
           goals = attackPositionCandidates(
             target,
             range,
-            (x, y) => open(x, y) && !turretAt(x, y) && !baseAt(x, y),
-            (from, to) => clearRay(from.x, from.y, to.x, to.y),
+            (x, y) => openForTeam(x, y, attacker.team) && !turretAt(x, y, attacker.team) && !baseAt(x, y),
+            (from, to) => clearRay(from.x, from.y, to.x, to.y, attacker.team),
           ),
-          approachDistances = pathDistanceMap(attacker),
+          approachDistances = pathDistanceMap(attacker, attacker.team),
           candidates = goals.flatMap((goal) => {
             const routeDistance = approachDistances.get(`${goal.x},${goal.y}`);
             if (routeDistance === undefined) return [];
@@ -5523,7 +6041,7 @@ export default function Seoul999mBelow() {
             key = `${x},${y}`;
           if (
             distances.has(key) ||
-            !open(x, y) ||
+            !openForTeam(x, y, u.team) ||
             turretAt(x, y) ||
             baseAt(x, y)
           )
@@ -5696,7 +6214,7 @@ export default function Seoul999mBelow() {
           { x: b.x, y: b.y - 2 }, { x: b.x, y: b.y + 2 }, { x: b.x - 1, y: b.y - 1 },
           { x: b.x + 1, y: b.y - 1 }, { x: b.x - 2, y: b.y + 1 }, { x: b.x + 2, y: b.y + 1 },
         ],
-        spawn = spawnCandidates.find((cell) => open(cell.x, cell.y) && !occupied(cell.x, cell.y) && !turretAt(cell.x, cell.y) && !baseAt(cell.x, cell.y)),
+        spawn = spawnCandidates.find((cell) => openForTeam(cell.x, cell.y, team) && !occupied(cell.x, cell.y, undefined, team) && !turretAt(cell.x, cell.y, team) && !baseAt(cell.x, cell.y)),
         x = spawn?.x ?? b.x,
         y = spawn?.y ?? b.y,
         dir = team === "blue" ? 1 : -1;
@@ -5957,14 +6475,14 @@ export default function Seoul999mBelow() {
                 !grid[p.y]?.[p.x] ||
                 grid[p.y][p.x].type === 4 ||
                 baseAt(p.x, p.y) ||
-                turretAt(p.x, p.y),
+                turretAt(p.x, p.y, u.team),
             )
           )
             continue;
           for (const p of cells)
-            if (!open(p.x, p.y)) breakTile(u, p.x, p.y, 99);
+            if (!openForTeam(p.x, p.y, u.team)) breakTile(u, p.x, p.y, 99);
           const first = cells[0];
-          if (open(first.x, first.y) && !occupied(first.x, first.y, u)) {
+          if (openForTeam(first.x, first.y, u.team) && !occupied(first.x, first.y, u)) {
             commitGridMove(u, first.x, first.y, 360);
             u.dir = step;
             u.minionVisual = "move";
@@ -5990,7 +6508,7 @@ export default function Seoul999mBelow() {
             const x = u.x + direction.x, y = u.y + direction.y,
               tile = grid[y]?.[x];
             if (
-              !tile || !open(x, y) || occupied(x, y, u) || turretAt(x, y) ||
+              !tile || !openForTeam(x, y, u.team) || occupied(x, y, u) || turretAt(x, y, u.team) ||
               baseAt(x, y) || marchReservations.has(`${x},${y}`)
             ) return null;
             const distance = Math.abs(objective.x - x) + Math.abs(objective.y - y);
@@ -6021,7 +6539,7 @@ export default function Seoul999mBelow() {
       moveMinionStep = (u: Unit, step: { x: number; y: number }, tick: number) => {
         const nx = u.x + step.x, ny = u.y + step.y;
         u.dir = step;
-        if (occupied(nx, ny, u) || turretAt(nx, ny) || baseAt(nx, ny) || marchReservations.has(`${nx},${ny}`))
+        if (occupied(nx, ny, u) || turretAt(nx, ny, u.team) || baseAt(nx, ny) || marchReservations.has(`${nx},${ny}`))
           return false;
         commitGridMove(u, nx, ny, Math.max(160, tick * 0.96));
         u.minionVisual = "move";
@@ -6040,7 +6558,7 @@ export default function Seoul999mBelow() {
           slot = slots[u.id % slots.length],
           ownCore = u.team === "blue" ? ALLY : ENEMY,
           goal = { x: ownCore.x + slot.x, y: ownCore.y + slot.y };
-        return open(goal.x, goal.y) && !turretAt(goal.x, goal.y)
+        return openForTeam(goal.x, goal.y, u.team) && !turretAt(goal.x, goal.y, u.team)
           ? goal
           : { x: ownCore.x, y: ownCore.y + 2 };
       },
@@ -6057,7 +6575,7 @@ export default function Seoul999mBelow() {
           goal = slots
             .map((offset) => ({ x: point.x + offset.x, y: point.y + offset.y }))
             .find(
-              (p) => open(p.x, p.y) && !turretAt(p.x, p.y) && !baseAt(p.x, p.y),
+              (p) => openForTeam(p.x, p.y, u.team) && !turretAt(p.x, p.y, u.team) && !baseAt(p.x, p.y),
             );
         return goal ?? point;
       },
@@ -6141,7 +6659,7 @@ export default function Seoul999mBelow() {
             x: unit.campaignGuardX ?? unit.x,
             y: unit.campaignGuardY ?? unit.y,
           },
-          guardDistances = pathDistanceMap(guard);
+          guardDistances = pathDistanceMap(guard, unit.team);
         return units
           .filter(
             (candidate) =>
@@ -6197,8 +6715,8 @@ export default function Seoul999mBelow() {
           unit,
           desired,
           (x, y) =>
-            open(x, y) &&
-            ((x === unit.x && y === unit.y) || (!baseAt(x, y) && !turretAt(x, y))),
+            openForTeam(x, y, unit.team) &&
+            ((x === unit.x && y === unit.y) || (!baseAt(x, y) && !turretAt(x, y, unit.team))),
         )?.goal ?? { x: unit.x, y: unit.y },
       tryEmergencyBreach = (unit: Unit, objective: { x: number; y: number }) => {
         const candidates = DIRS
@@ -6266,7 +6784,7 @@ export default function Seoul999mBelow() {
               const x = u.x - forward,
                 y = u.y + offsetY,
                 distance = coreDistances.get(`${x},${y}`);
-              if (distance === undefined || !open(x, y) || occupied(x, y) || turretAt(x, y) || baseAt(x, y)) continue;
+              if (distance === undefined || !openForTeam(x, y, u.team) || occupied(x, y, undefined, u.team) || turretAt(x, y, u.team) || baseAt(x, y)) continue;
               candidates.push({ x, y, distance });
             }
           candidates.sort((a, b) => a.distance - b.distance || a.x - b.x || Math.abs(a.y - ALLY.y) - Math.abs(b.y - ALLY.y));
@@ -6389,7 +6907,7 @@ export default function Seoul999mBelow() {
               ? assistInstallation
               : nearestEnemyTurret(u, shooterRange)
             : undefined;
-      if (ranged && clearRay(u.x, u.y, ranged.x, ranged.y)) {
+      if (ranged && clearRay(u.x, u.y, ranged.x, ranged.y, u.team)) {
         u.blockedMs = 0;
         u.noPathMs = 0;
         u.dir = cardinal(ranged.x - u.x, ranged.y - u.y);
@@ -6410,7 +6928,7 @@ export default function Seoul999mBelow() {
         u.act = attackDelay;
         return;
       }
-      if (rangedTurret && clearRay(u.x, u.y, rangedTurret.x, rangedTurret.y)) {
+      if (rangedTurret && clearRay(u.x, u.y, rangedTurret.x, rangedTurret.y, u.team)) {
         u.blockedMs = 0;
         u.noPathMs = 0;
         u.dir = cardinal(rangedTurret.x - u.x, rangedTurret.y - u.y);
@@ -6466,7 +6984,7 @@ export default function Seoul999mBelow() {
           installation.y - u.y,
         );
         if (installationDistance <= combatRangeFor(u) &&
-          clearRay(u.x, u.y, installation.x, installation.y)) {
+          clearRay(u.x, u.y, installation.x, installation.y, u.team)) {
           u.blockedMs = 0;
           u.noPathMs = 0;
           melee(u, {
@@ -6519,7 +7037,7 @@ export default function Seoul999mBelow() {
             )],
             direction = cardinal(routeGoal.x - leadScientist.x, routeGoal.y - leadScientist.y),
             ahead = { x: leadScientist.x + direction.x * 4, y: leadScientist.y + direction.y * 4 },
-            objective = open(ahead.x, ahead.y) ? ahead : routeGoal,
+            objective = openForTeam(ahead.x, ahead.y, u.team) ? ahead : routeGoal,
             escortStep = nextPath(u, objective);
           if (escortStep) moveMinionStep(u, escortStep, tick);
           u.act = tick;
@@ -6600,7 +7118,7 @@ export default function Seoul999mBelow() {
         const installation = priorityInstallation.installation;
         if (
           priorityInstallation.directDistance <= combatRangeFor(u) &&
-          clearRay(u.x, u.y, installation.x, installation.y)
+          clearRay(u.x, u.y, installation.x, installation.y, u.team)
         ) {
           u.dir = cardinal(installation.x - u.x, installation.y - u.y);
           melee(u, { x: installation.x - u.x, y: installation.y - u.y });
@@ -6628,7 +7146,7 @@ export default function Seoul999mBelow() {
       ) {
         if (
           localCoreDistance <= combatRangeFor(u) &&
-          clearRay(u.x, u.y, enemyBase.x, enemyBase.y)
+          clearRay(u.x, u.y, enemyBase.x, enemyBase.y, u.team)
         ) {
           u.blockedMs = 0;
           u.noPathMs = 0;
@@ -6656,9 +7174,9 @@ export default function Seoul999mBelow() {
           followGoals = followSlots
             .map((slot) => ({ x: hero.x + slot.x, y: hero.y + slot.y }))
             .filter((goal) =>
-              open(goal.x, goal.y) &&
+              openForTeam(goal.x, goal.y, u.team) &&
               (!occupied(goal.x, goal.y, u) || (goal.x === u.x && goal.y === u.y)) &&
-              !turretAt(goal.x, goal.y) &&
+              !turretAt(goal.x, goal.y, u.team) &&
               !baseAt(goal.x, goal.y),
             ),
           followerStep = pathPlanToGoals(u, followGoals)?.step;
@@ -6716,7 +7234,7 @@ export default function Seoul999mBelow() {
                     routePoints.length - 1,
                   ),
                 resume = routePoints[resumeIndex];
-              if (pathDistanceMap(resume).has(`${u.x},${u.y}`)) {
+              if (pathDistanceMap(resume, u.team).has(`${u.x},${u.y}`)) {
                 u.routeRetreating = false;
                 u.routePointIndex = resumeIndex;
                 u.routeResumeIndex = undefined;
@@ -6940,7 +7458,8 @@ export default function Seoul999mBelow() {
           ctx.lineTo(onMinimap ? 0 : -3, 0);
           ctx.lineTo(onMinimap ? -2 : -7, onMinimap ? 2 : 6);
           ctx.closePath();
-          ctx.fill();
+          if (id === "A") ctx.fill();
+          else ctx.stroke();
           ctx.restore();
         }
         if (!onMinimap && seen[target.y]?.[target.x]) {
@@ -6992,11 +7511,14 @@ export default function Seoul999mBelow() {
         units.filter(
           (target) =>
             target.alive &&
+            target.networkVisible !== false &&
             target.team !== attacker.team &&
+            canEngageAt(attacker.team, target.x, target.y) &&
             Math.hypot(target.x - attacker.x, target.y - attacker.y) <= radius &&
-            (ignoresTerrain || clearRay(attacker.x, attacker.y, target.x, target.y)),
+            (ignoresTerrain || clearRay(attacker.x, attacker.y, target.x, target.y, attacker.team)),
         ),
       damageFromBattleHero = (attacker: Unit, target: Unit, multiplier: number, stun = 0, actionName = "기본 공격") => {
+        if (!canEngageAt(attacker.team, target.x, target.y)) return 0;
         const dealt = hurt(
           target,
           attacker.attack * Math.max(0.35, multiplier),
@@ -7032,6 +7554,14 @@ export default function Seoul999mBelow() {
           radius,
         });
       },
+      canObserveBattleHeroFx = (attacker: Unit) =>
+        !isSecretTunnel ||
+        attacker.team === "blue" ||
+        (
+          battlePhase === "assault" &&
+          openForTeam(attacker.x, attacker.y, "blue") &&
+          visible(attacker.x, attacker.y)
+        ),
       resolveBattleHeroImpact = (impact: (typeof pendingBattleHeroImpacts)[number]) => {
         const { attacker, targetId, slot, action, actionName, radius } = impact;
         if (!attacker.alive) return;
@@ -7063,10 +7593,11 @@ export default function Seoul999mBelow() {
           return;
         }
         if (!target?.alive || target.team === attacker.team) return;
+        if (!canEngageAt(attacker.team, target.x, target.y)) return;
         if (Math.hypot(target.x - attacker.x, target.y - attacker.y) > Math.max(2.2, action.range + 1.25)) return;
         if (
           !new Set(["acidShot", "glide", "overclock"]).has(mode) &&
-          !clearRay(attacker.x, attacker.y, target.x, target.y)
+          !clearRay(attacker.x, attacker.y, target.x, target.y, attacker.team)
         )
           return;
         damageFromBattleHero(attacker, target, action.damage, stunModes.has(mode) ? 720 : 0, actionName);
@@ -7076,7 +7607,7 @@ export default function Seoul999mBelow() {
           const direction = cardinal(target.x - attacker.x, target.y - attacker.y),
             nx = target.x + direction.x,
             ny = target.y + direction.y;
-          if (open(nx, ny) && !occupied(nx, ny, target) && !turretAt(nx, ny) && !baseAt(nx, ny)) {
+          if (openForTeam(nx, ny, target.team) && !occupied(nx, ny, target) && !turretAt(nx, ny, target.team) && !baseAt(nx, ny)) {
             commitGridMove(target, nx, ny, 220);
             target.dir = direction;
           }
@@ -7097,9 +7628,11 @@ export default function Seoul999mBelow() {
           duration = slot === 4 ? 960 : 720,
           definition = HEROES.find((heroDefinition) => heroDefinition.id === attacker.heroId),
           actionName = definition?.skills[slot === 4 ? 3 : slot - 1] ?? action.caption;
-        battleHeroFx(attacker, target, mode, radius, duration);
+        const observable = canObserveBattleHeroFx(attacker);
+        if (observable) battleHeroFx(attacker, target, mode, radius, duration);
         setBattleHeroAction(attacker, slot, duration);
-        void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", slot, attacker.team === "blue" ? .76 : .58);
+        if (observable)
+          void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", slot, attacker.team === "blue" ? .76 : .58);
         attacker.aiComboLockUntil = now + duration + (slot === 4 ? 1200 : 700);
         pendingBattleHeroImpacts.push({
           attacker,
@@ -7114,7 +7647,8 @@ export default function Seoul999mBelow() {
         cooldowns[slot === 1 ? 0 : slot === 2 ? 1 : 3] = now + action.cooldown;
         attacker.aiCooldowns = cooldowns;
         attacker.aiPreviousAction = slot === 1 ? "skill1" : slot === 2 ? "skill2" : "ultimate";
-        setMessage(`${attacker.name} · ${actionName}${attacker.team === "red" ? " 준비 · 타격을 피하라" : ""}`);
+        if (observable)
+          setMessage(`${attacker.name} · ${actionName}${attacker.team === "red" ? " 준비 · 타격을 피하라" : ""}`);
       },
       executeBattleHeroSiegeSkill = (attacker: Unit, target: Turret, slot: 1 | 2 | 4) => {
         const action = heroAction(attacker.heroId ?? "yoo-seungcheon", slot);
@@ -7124,9 +7658,12 @@ export default function Seoul999mBelow() {
           definition = HEROES.find((heroDefinition) => heroDefinition.id === attacker.heroId),
           actionName = definition?.skills[slot === 4 ? 3 : slot - 1] ?? action.caption;
         attacker.dir = cardinal(target.x - attacker.x, target.y - attacker.y);
-        battleHeroFx(attacker, target, action.mode, Math.max(1.2, action.radius), duration);
+        const observable = canObserveBattleHeroFx(attacker);
+        if (observable)
+          battleHeroFx(attacker, target, action.mode, Math.max(1.2, action.radius), duration);
         setBattleHeroAction(attacker, slot, duration);
-        void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", slot, attacker.team === "blue" ? .76 : .58);
+        if (observable)
+          void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", slot, attacker.team === "blue" ? .76 : .58);
         attacker.aiComboLockUntil = now + duration + (slot === 4 ? 1200 : 700);
         hurtTurret(
           target,
@@ -7143,18 +7680,27 @@ export default function Seoul999mBelow() {
         setMessage(`${attacker.name} 공성 · ${actionName}으로 ${buildDef(target.kind).name} 타격`);
         return true;
       },
-      executeBattleHeroDrill = (attacker: Unit, goal: { x: number; y: number }) => {
+      executeBattleHeroDrill = (
+        attacker: Unit,
+        goal: { x: number; y: number },
+        options?: { direction?: { x: number; y: number }; drillWidthBonus?: number; drillCooldownMultiplier?: number },
+      ) => {
         const now = performance.now(), action = heroAction(attacker.heroId ?? "yoo-seungcheon", 3),
-          direction = cardinal(goal.x - attacker.x, goal.y - attacker.y),
+          direction = options?.direction ?? cardinal(goal.x - attacker.x, goal.y - attacker.y),
           kitDefinition = heroKit(attacker.heroId ?? "yoo-seungcheon"),
           length = Math.max(3, kitDefinition.drill.length);
-        for (let distance = 1; distance <= length; distance++)
-          breakTile(attacker, attacker.x + direction.x * distance, attacker.y + direction.y * distance, attacker.faction === "ai" ? 3 : 2);
-        battleHeroFx(attacker, null, action.mode, 2, 820);
+        if (isSecretTunnel)
+          applySecretDrillPattern(attacker, direction, options?.drillWidthBonus ?? 0);
+        else
+          for (let distance = 1; distance <= length; distance++)
+            breakTile(attacker, attacker.x + direction.x * distance, attacker.y + direction.y * distance, attacker.faction === "ai" ? 3 : 2);
+        const observable = canObserveBattleHeroFx(attacker);
+        if (observable) battleHeroFx(attacker, null, action.mode, 2, 820);
         setBattleHeroAction(attacker, 3, 820);
-        void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", 3, attacker.team === "blue" ? .76 : .58);
+        if (observable)
+          void combatAudio.skillCue(attacker.heroId ?? "yoo-seungcheon", 3, attacker.team === "blue" ? .76 : .58);
         const cooldowns = attacker.aiCooldowns ?? [0, 0, 0, 0];
-        cooldowns[2] = now + action.cooldown;
+        cooldowns[2] = now + action.cooldown * (isSecretTunnel ? 0.5 : 1) * (options?.drillCooldownMultiplier ?? 1);
         attacker.aiCooldowns = cooldowns;
         attacker.aiPreviousAction = "drill";
       },
@@ -7162,7 +7708,18 @@ export default function Seoul999mBelow() {
         while (onlineCommandInboxRef.current.length) {
           const command = onlineCommandInboxRef.current.shift()!,
             unit = battleAiHeroes.find((candidate) => candidate.onlinePlayerId === command.playerId);
+          appliedOnlineCommandSequence = Math.max(appliedOnlineCommandSequence, command.sequence);
           if (!unit || !unit.alive) continue;
+          if (
+            isSecretTunnel &&
+            battlePhase === "prepare" &&
+            (command.type === "attack" || command.type === "skill" || command.type === "tactical")
+          ) continue;
+          if (
+            isSecretTunnel &&
+            battlePhase !== "prepare" &&
+            (command.type === "drill" || command.type === "fill")
+          ) continue;
           const commandPoint = command.x === undefined || command.y === undefined
               ? undefined
               : { x: command.x, y: command.y },
@@ -7174,8 +7731,18 @@ export default function Seoul999mBelow() {
                   Math.hypot(b.x - commandPoint.x, b.y - commandPoint.y),
                 )[0] ?? nearestEnemy(unit, 9)
               : nearestEnemy(unit, 9);
-          if (command.type === "move" && command.x !== undefined && command.y !== undefined) {
-            unit.remoteGoal = { x: command.x, y: command.y };
+          if (command.type === "move") {
+            if (command.x !== undefined && command.y !== undefined)
+              unit.remoteGoal = { x: command.x, y: command.y };
+            else if (
+              command.dx !== undefined &&
+              command.dy !== undefined &&
+              (command.dx !== 0 || command.dy !== 0)
+            )
+              unit.remoteGoal = {
+                x: unit.x + command.dx * 2,
+                y: unit.y + command.dy * 2,
+              };
           } else if (command.type === "attack" && target) {
             const range = HEROES.find((definition) => definition.id === unit.heroId)?.stats.range ?? 1.2;
             unit.dir = cardinal(target.x - unit.x, target.y - unit.y);
@@ -7186,10 +7753,55 @@ export default function Seoul999mBelow() {
             const ready = unit.aiCooldowns ?? [0, 0, 0, 0], index = command.slot === 1 ? 0 : command.slot === 2 ? 1 : 3;
             if (ready[index] <= performance.now()) executeBattleHeroSkill(unit, target, command.slot);
           } else if (command.type === "drill") {
-            executeBattleHeroDrill(
-              unit,
-              commandPoint ?? unit.remoteGoal ?? (unit.team === "blue" ? ENEMY : ALLY),
-            );
+            const ready = unit.aiCooldowns ?? [0, 0, 0, 0];
+            if (ready[2] <= performance.now())
+              executeBattleHeroDrill(
+                unit,
+                commandPoint ?? unit.remoteGoal ?? (unit.team === "blue" ? ENEMY : ALLY),
+                {
+                  direction: command.dx === undefined || command.dy === undefined
+                    ? undefined
+                    : { x: command.dx, y: command.dy },
+                  drillWidthBonus: command.drillWidthBonus,
+                  drillCooldownMultiplier: command.drillCooldownMultiplier,
+                },
+              );
+          } else if (command.type === "survival") {
+            const now = performance.now();
+            if (now < (unit.networkSurvivalCooldownUntil ?? 0)) continue;
+            const type = ["yoo-seungcheon", "hoebun"].includes(unit.heroId ?? "")
+                ? "jump"
+                : ["ahn-seona", "r486"].includes(unit.heroId ?? "")
+                  ? "heal"
+                  : ["kang-ryeokhan", "cheolgak", "g77", "c999"].includes(unit.heroId ?? "")
+                    ? "defense"
+                    : "dodge",
+              direction = commandPoint
+                ? cardinal(commandPoint.x - unit.x, commandPoint.y - unit.y)
+                : cardinal(unit.dir.x, unit.dir.y);
+            if (type === "heal")
+              unit.hp = Math.min(unit.maxHp, unit.hp + Math.round(unit.maxHp * 0.24));
+            else if (type === "defense")
+              unit.networkSurvivalArmorUntil = now + 4500;
+            else {
+              const maximumDistance = type === "jump" ? 3 : 1;
+              for (let distance = maximumDistance; distance >= 1; distance--) {
+                const x = unit.x + direction.x * distance,
+                  y = unit.y + direction.y * distance;
+                if (
+                  openForTeam(x, y, unit.team) &&
+                  !occupied(x, y, unit, unit.team) &&
+                  !turretAt(x, y, unit.team) &&
+                  !baseAt(x, y)
+                ) {
+                  commitGridMove(unit, x, y, type === "jump" ? 520 : 360);
+                  break;
+                }
+              }
+              unit.networkSurvivalEvadeUntil = now + (type === "jump" ? 560 : 520);
+            }
+            unit.act = Math.max(unit.act, type === "jump" ? 520 : type === "dodge" ? 360 : 500);
+            unit.networkSurvivalCooldownUntil = now + (type === "jump" ? 12000 : 15000);
           } else if (
             command.type === "route" &&
             command.route &&
@@ -7197,6 +7809,17 @@ export default function Seoul999mBelow() {
             command.y !== undefined
           ) {
             applyTeamRouteTarget(unit.team, command.route, command.x, command.y);
+          } else if (command.type === "allocation" && command.allocation) {
+            tunnelAllocations[unit.team] = command.allocation;
+            units
+              .filter((candidate) =>
+                candidate.alive && candidate.team === unit.team && candidate.role === "minion",
+              )
+              .forEach((candidate, index) => {
+                candidate.routeId = chooseSecretTunnelRoute(index, command.allocation!);
+                candidate.routePointIndex = 0;
+                candidate.routeWaitMs = 0;
+              });
           } else if (
             command.type === "build" &&
             command.kind &&
@@ -7236,10 +7859,10 @@ export default function Seoul999mBelow() {
               (!isBlocker(command.kind) || wallCount < 4) &&
               Math.hypot(command.x - ownCore.x, command.y - ownCore.y) >= 2 &&
               Math.hypot(command.x - ownCore.x, command.y - ownCore.y) <= 6 &&
-              open(command.x, command.y) &&
+              openForTeam(command.x, command.y, unit.team) &&
               !baseAt(command.x, command.y) &&
               !turretAt(command.x, command.y) &&
-              !occupied(command.x, command.y) &&
+              !occupied(command.x, command.y, unit) &&
               preservesDeployment &&
               spendTeamCredits(unit.team, placementPrice)
             )
@@ -7252,15 +7875,59 @@ export default function Seoul999mBelow() {
                 cool: 250,
               }));
           } else if (
+            (command.type === "upgrade" || command.type === "demolish") &&
+            command.x !== undefined &&
+            command.y !== undefined
+          ) {
+            const installation = turrets.find((candidate) =>
+              candidate.hp > 0 &&
+              candidate.team === unit.team &&
+              candidate.x === command.x &&
+              candidate.y === command.y,
+            );
+            if (!installation) continue;
+            if (command.type === "upgrade") {
+              if (installation.level >= 2 || installation.upgrade) continue;
+              const cost = Math.ceil(buildDef(installation.kind).cost * 0.65);
+              if (!spendTeamCredits(unit.team, cost)) continue;
+              installation.upgrade = { remaining: 1500, cost };
+            } else {
+              if (installation.starter) continue;
+              installation.demolish = 1000;
+            }
+          } else if (
             command.type === "fill" &&
             command.x !== undefined &&
             command.y !== undefined &&
             Math.hypot(command.x - unit.x, command.y - unit.y) <= 2.25 &&
-            open(command.x, command.y) &&
+            Math.hypot(command.x - ALLY.x, command.y - ALLY.y) >= 3 &&
+            Math.hypot(command.x - ENEMY.x, command.y - ENEMY.y) >= 3 &&
+            openForTeam(command.x, command.y, unit.team) &&
             !baseAt(command.x, command.y) &&
             !turretAt(command.x, command.y) &&
-            !occupied(command.x, command.y)
+            !occupied(command.x, command.y, unit)
           ) {
+            let sealedOverlay: SecretTunnelOverlay | null = null;
+            if (isSecretTunnel && secretTunnelOverlay) {
+              const sealed = sealSecretTunnelTileForTeam(
+                secretTunnelOverlay,
+                { x: command.x, y: command.y },
+                unit.team,
+                { blue: ALLY, red: ENEMY },
+              );
+              if (!sealed.sealed) continue;
+              sealedOverlay = sealed.overlay;
+            }
+            if (!spendTeamCredits(unit.team, 15)) continue;
+            if (sealedOverlay) {
+              secretTunnelOverlay = sealedOverlay;
+              const connections = evaluateSecretTunnelConnections(
+                secretTunnelOverlay,
+                { blue: ALLY, red: ENEMY },
+              );
+              secretBlueConnected = connections.blue.valid;
+              secretRedConnected = connections.red.valid;
+            }
             grid[command.y][command.x] = {
               type: 5,
               hp: 2,
@@ -7276,7 +7943,7 @@ export default function Seoul999mBelow() {
           } else if (command.type === "tactical" && command.tacticalRole) {
             const tacticalTarget = command.x === undefined || command.y === undefined
               ? undefined
-              : Math.hypot(command.x - unit.x, command.y - unit.y) <= 12 && open(command.x, command.y)
+              : Math.hypot(command.x - unit.x, command.y - unit.y) <= 12 && openForTeam(command.x, command.y, unit.team)
                 ? { x: command.x, y: command.y }
                 : undefined;
             if (command.tacticalRole === "area" && !tacticalTarget) continue;
@@ -7293,14 +7960,130 @@ export default function Seoul999mBelow() {
         const localRoomPlayer = onlineRoom.players.find((player) => player.id === onlineIdentity.playerId),
           isHost = onlineRoom.hostId === onlineIdentity.playerId;
         if (!localRoomPlayer) return;
-        if (!isHost) {
-          const snapshot = onlineSnapshotRef.current;
-          if (!snapshot || snapshot.sequence <= appliedOnlineSnapshot) return;
+        const snapshot = onlineSnapshotRef.current;
+        if (
+          snapshot &&
+          snapshot.sequence > appliedOnlineSnapshot &&
+          (!isHost || (
+            hostRestoreSnapshotSequence > 0 &&
+            snapshot.sequence === hostRestoreSnapshotSequence
+          ))
+        ) {
           appliedOnlineSnapshot = snapshot.sequence;
           wave = snapshot.wave;
           const mirrored = localRoomPlayer.team === "red";
           const ownCanonical = localRoomPlayer.team,
             enemyCanonical = ownCanonical === "blue" ? "red" : "blue";
+          if (isSecretTunnel) {
+            const phaseChanged = Boolean(snapshot.phase && snapshot.phase !== battlePhase);
+            if (snapshot.phase) battlePhase = snapshot.phase;
+            if (isHost && snapshot.phaseEndsAt !== undefined && Number.isFinite(snapshot.phaseEndsAt)) {
+              battlePhaseEndsAt = snapshot.phaseEndsAt;
+              battlePhaseTimeLeft = Math.max(0, snapshot.phaseEndsAt - Date.now());
+            } else if (snapshot.phaseTimeLeftMs !== undefined && Number.isFinite(snapshot.phaseTimeLeftMs)) {
+              battlePhaseTimeLeft = Math.max(0, snapshot.phaseTimeLeftMs);
+              battlePhaseEndsAt = Date.now() + battlePhaseTimeLeft;
+            } else if (snapshot.phaseEndsAt !== undefined && Number.isFinite(snapshot.phaseEndsAt)) {
+              battlePhaseEndsAt = snapshot.phaseEndsAt;
+              battlePhaseTimeLeft = Math.max(0, snapshot.phaseEndsAt - Date.now());
+            }
+            if (snapshot.teamRouteAllocations) {
+              const ownAllocation = snapshot.teamRouteAllocations[ownCanonical];
+              if (ownAllocation) tunnelAllocations.blue = ownAllocation;
+              const enemyAllocation = snapshot.teamRouteAllocations[enemyCanonical];
+              if (isHost && enemyAllocation) tunnelAllocations.red = enemyAllocation;
+            }
+            if (snapshot.teamConnections?.[ownCanonical] !== undefined)
+              secretBlueConnected = snapshot.teamConnections[ownCanonical]!;
+            if (isHost && snapshot.teamConnections?.[enemyCanonical] !== undefined)
+              secretRedConnected = snapshot.teamConnections[enemyCanonical]!;
+            if (secretTunnelOverlay && snapshot.tunnelAccess) {
+              const resetTiles = secretTunnelOverlay.tiles.map((row) => row.map((tile) => isHost
+                ? {
+                    ...tile,
+                    durability: { ...tile.maxDurability },
+                    access: TUNNEL_ACCESS.none,
+                    excavatedBy: TUNNEL_ACCESS.none,
+                    owner: null,
+                    sharedBackbone: false,
+                  }
+                : {
+                    ...tile,
+                    durability: { ...tile.durability, blue: tile.maxDurability.blue },
+                    access: (tile.access & TUNNEL_ACCESS.red) as 0 | 1 | 2 | 3,
+                    excavatedBy: (tile.excavatedBy & TUNNEL_ACCESS.red) as 0 | 1 | 2 | 3,
+                  }));
+              for (const state of snapshot.tunnelAccess) {
+                const current = resetTiles[state.y]?.[state.x];
+                if (!current) continue;
+                const visibleAccess = localTunnelAccess(state.accessMask),
+                  localDurability = state.durability?.[ownCanonical],
+                  localMaximum = state.maxDurability?.[ownCanonical],
+                  opponentDurability = state.durability?.[enemyCanonical],
+                  opponentMaximum = state.maxDurability?.[enemyCanonical],
+                  restoredOwner = state.owner ? localTeamForCanonical(state.owner) : null,
+                  ownAccess = visibleAccess & TUNNEL_ACCESS.blue,
+                  revealedOpponentAccess = visibleAccess === TUNNEL_ACCESS.shared
+                    ? TUNNEL_ACCESS.red
+                    : TUNNEL_ACCESS.none,
+                  ownExcavation = localTunnelAccess(state.excavatedBy ?? 0) & TUNNEL_ACCESS.blue;
+                resetTiles[state.y][state.x] = isHost
+                  ? {
+                      ...current,
+                      durability: {
+                        blue: localDurability ?? current.durability.blue,
+                        red: opponentDurability ?? current.durability.red,
+                      },
+                      maxDurability: {
+                        blue: localMaximum ?? current.maxDurability.blue,
+                        red: opponentMaximum ?? current.maxDurability.red,
+                      },
+                      access: visibleAccess,
+                      excavatedBy: localTunnelAccess(state.excavatedBy ?? 0),
+                      owner: restoredOwner,
+                      sharedBackbone: Boolean(state.sharedBackbone),
+                    }
+                  : {
+                      ...current,
+                      durability: {
+                        ...current.durability,
+                        blue: localDurability ?? current.durability.blue,
+                      },
+                      maxDurability: {
+                        ...current.maxDurability,
+                        blue: localMaximum ?? current.maxDurability.blue,
+                      },
+                      access: (
+                        (current.access & TUNNEL_ACCESS.red) |
+                        ownAccess |
+                        revealedOpponentAccess
+                      ) as 0 | 1 | 2 | 3,
+                      excavatedBy: (
+                        (current.excavatedBy & TUNNEL_ACCESS.red) |
+                        ownExcavation
+                      ) as 0 | 1 | 2 | 3,
+                      owner: restoredOwner === "blue" ? "blue" : current.owner,
+                      sharedBackbone: Boolean(state.sharedBackbone),
+                    };
+              }
+              secretTunnelOverlay = { ...secretTunnelOverlay, tiles: resetTiles };
+              for (const state of snapshot.tunnelAccess) {
+                if (!seen[state.y] || !grid[state.y]?.[state.x]) continue;
+                seen[state.y][state.x] = true;
+                memory[state.y][state.x] = { ...tileForLocalTunnelView(state.x, state.y) };
+              }
+            }
+            if (phaseChanged && battlePhase === "assault") {
+              applyTeamRouteTarget("blue", "A", ENEMY.x, ENEMY.y);
+              applyTeamRouteTarget("blue", "B", ENEMY.x, ENEMY.y);
+              applyTeamRouteTarget("red", "A", ALLY.x, ALLY.y);
+              applyTeamRouteTarget("red", "B", ALLY.x, ALLY.y);
+              for (const team of ["blue", "red"] as Team[])
+                for (const id of ["A", "B"] as RouteId[])
+                  teamMarchRoutes[team][id].stance = "assault";
+              setRouteStances({ A: "assault", B: "assault" });
+            }
+          }
           if (snapshot.teamMinionLevels[ownCanonical] !== minionLevels.blue)
             applyTeamMinionLevel("blue", snapshot.teamMinionLevels[ownCanonical]);
           if (snapshot.teamMinionLevels[enemyCanonical] !== minionLevels.red)
@@ -7311,9 +8094,15 @@ export default function Seoul999mBelow() {
           allyShield = mirrored ? snapshot.enemyCore.shield : snapshot.allyCore.shield;
           enemyHp = mirrored ? snapshot.allyCore.hp : snapshot.enemyCore.hp;
           enemyShield = mirrored ? snapshot.allyCore.shield : snapshot.enemyCore.shield;
+          const snapshotHeroIds = new Set(snapshot.heroes.map((state) => state.playerId));
+          if (!isHost)
+            for (const unit of units)
+              if (unit.role === "hero" && unit.onlinePlayerId && unit.team === "red")
+                unit.networkVisible = snapshotHeroIds.has(unit.onlinePlayerId);
           for (const state of snapshot.heroes) {
             const unit = units.find((candidate) => candidate.onlinePlayerId === state.playerId);
             if (!unit) continue;
+            unit.networkVisible = true;
             const applyPosition = shouldApplyAuthoritativeHeroPosition(
               isHost,
               state.playerId,
@@ -7429,7 +8218,7 @@ export default function Seoul999mBelow() {
             if (!snapshotInstallations.has(key)) turrets.splice(index, 1);
           }
           for (const state of snapshot.terrain)
-            if (grid[state.y]?.[state.x])
+            if (grid[state.y]?.[state.x]) {
               grid[state.y][state.x] = {
                 type: state.type,
                 hp: state.hp,
@@ -7442,12 +8231,59 @@ export default function Seoul999mBelow() {
                 ...(state.obstacle === undefined ? {} : { obstacle: state.obstacle }),
                 ...(state.hazard === undefined ? {} : { hazard: state.hazard }),
               };
-          return;
+              if (isHost) onlineTerrainChanges.set(`${state.x},${state.y}`, state);
+            }
+          if (!isHost) return;
         }
+        if (!isHost) return;
         onlineSnapshotClock -= dt;
         if (onlineSnapshotClock > 0) return;
         onlineSnapshotClock = ONLINE_SNAPSHOT_INTERVAL_MS;
         const snapshotPayload: Omit<OnlineBattleSnapshot, "sequence" | "issuedAt"> = {
+          lastAppliedCommandSequence: appliedOnlineCommandSequence,
+          ...(isSecretTunnel
+            ? {
+                phase: battlePhase,
+                phaseTimeLeftMs: Math.max(0, battlePhaseTimeLeft),
+                phaseEndsAt: battlePhaseEndsAt,
+                teamConnections: {
+                  [canonicalTeamFor("blue")]: secretBlueConnected,
+                  [canonicalTeamFor("red")]: secretRedConnected,
+                },
+                teamRouteAllocations: {
+                  blue: tunnelAllocations[localTeamForCanonical("blue")],
+                  red: tunnelAllocations[localTeamForCanonical("red")],
+                },
+                tunnelAccess: secretTunnelOverlay
+                  ? secretTunnelOverlay.tiles.flatMap((row, y) =>
+                      row.flatMap((tile, x) => {
+                        const hasProgress = tile.durability.blue < tile.maxDurability.blue ||
+                          tile.durability.red < tile.maxDurability.red;
+                        if (tile.access === TUNNEL_ACCESS.none && !hasProgress && tile.excavatedBy === TUNNEL_ACCESS.none)
+                          return [];
+                        const canonicalBlue = canonicalTeamFor("blue"),
+                          canonicalRed = canonicalTeamFor("red");
+                        return [{
+                          x,
+                          y,
+                          accessMask: canonicalTunnelAccess(tile.access),
+                          sharedBackbone: tile.sharedBackbone,
+                          ...(tile.owner ? { owner: canonicalTeamFor(tile.owner) } : {}),
+                          durability: {
+                            [canonicalBlue]: tile.durability.blue,
+                            [canonicalRed]: tile.durability.red,
+                          },
+                          maxDurability: {
+                            [canonicalBlue]: tile.maxDurability.blue,
+                            [canonicalRed]: tile.maxDurability.red,
+                          },
+                          excavatedBy: canonicalTunnelAccess(tile.excavatedBy),
+                        }];
+                      }),
+                    )
+                  : [],
+              }
+            : {}),
           wave,
           teamMinionLevels: {
             blue: minionLevels[localTeamForCanonical("blue")],
@@ -7457,8 +8293,12 @@ export default function Seoul999mBelow() {
             blue: teamCredits(localTeamForCanonical("blue")),
             red: teamCredits(localTeamForCanonical("red")),
           },
-          allyCore: { hp: allyHp, shield: allyShield },
-          enemyCore: { hp: enemyHp, shield: enemyShield },
+          allyCore: canonicalLocalTeam === "blue"
+            ? { hp: allyHp, shield: allyShield }
+            : { hp: enemyHp, shield: enemyShield },
+          enemyCore: canonicalLocalTeam === "blue"
+            ? { hp: enemyHp, shield: enemyShield }
+            : { hp: allyHp, shield: allyShield },
           heroes: units.filter((unit) => unit.role === "hero" && unit.onlinePlayerId).map((unit) => ({
             playerId: unit.onlinePlayerId!, x: unit.x, y: unit.y, hp: unit.hp, maxHp: unit.maxHp,
             alive: unit.alive, dir: unit.dir,
@@ -7523,6 +8363,33 @@ export default function Seoul999mBelow() {
           } else aiHero.act = 120;
           return;
         }
+        if (isSecretTunnel && battlePhase === "prepare") {
+          const teamConnected = aiHero.team === "blue" ? secretBlueConnected : secretRedConnected;
+          if (teamConnected) {
+            aiHero.act = 240;
+            aiHero.aiDecisionReason = "유효 전선 확보 · 개전 대기";
+            return;
+          }
+          const opposingCore = aiHero.team === "blue" ? ENEMY : ALLY,
+            laneOffset = aiHero.id % 2 ? -2 : 2,
+            goal = {
+              x: opposingCore.x + (aiHero.team === "blue" ? -3 : 3),
+              y: Math.max(4, Math.min(ROWS - 5, opposingCore.y + laneOffset)),
+            },
+            route = shortestRouteToAny(
+              aiHero,
+              [goal],
+              (x, y) => Boolean(grid[y]?.[x] && grid[y][x].type !== 4),
+            ),
+            next = route?.cells[1],
+            step = next
+              ? { x: next.x - aiHero.x, y: next.y - aiHero.y }
+              : cardinal(goal.x - aiHero.x, goal.y - aiHero.y);
+          moveOrDig(aiHero, step.x, step.y, 180);
+          aiHero.act = 150 / terrainMoveFactor(aiHero.x, aiHero.y);
+          aiHero.aiDecisionReason = "비밀 굴착 준비 · 상대 코어 방향 전선 확보";
+          return;
+        }
         if (!isCampaign && aiHero.team === "red") ensureComputerAttackRoutes("red");
         if (aiHero.campaign1Boss) {
           const nearbyDefender = units
@@ -7551,14 +8418,14 @@ export default function Seoul999mBelow() {
                 y: ALLY.y + direction.y,
               })).filter(
                 (goal) =>
-                  open(goal.x, goal.y) &&
+                  openForTeam(goal.x, goal.y, aiHero.team) &&
                   (!occupied(goal.x, goal.y, aiHero) ||
                     (goal.x === aiHero.x && goal.y === aiHero.y)) &&
-                  !turretAt(goal.x, goal.y),
+                  !turretAt(goal.x, goal.y, aiHero.team),
               ),
               corePlan = pathPlanToGoals(aiHero, coreApproaches),
               step = corePlan?.step ?? cardinal(ALLY.x - aiHero.x, ALLY.y - aiHero.y),
-              blockingInstallation = turretAt(aiHero.x + step.x, aiHero.y + step.y);
+              blockingInstallation = turretAt(aiHero.x + step.x, aiHero.y + step.y, aiHero.team);
             if (blockingInstallation && blockingInstallation.team === "blue") {
               melee(aiHero, step, 8, "mandible");
               aiHero.aiDecisionReason = "서울 거점 진입로의 설치물을 부순다";
@@ -7680,7 +8547,7 @@ export default function Seoul999mBelow() {
                 : frontScout?.aiSearchGoal ?? explorationGoal(aiHero),
           engagementGoal = target ?? strategicGoal,
           routeStep = cardinal(engagementGoal.x - aiHero.x, engagementGoal.y - aiHero.y),
-          routeBlocked = !open(aiHero.x + routeStep.x, aiHero.y + routeStep.y),
+          routeBlocked = !openForTeam(aiHero.x + routeStep.x, aiHero.y + routeStep.y, aiHero.team),
           cooldowns = aiHero.aiCooldowns ?? [0, 0, 0, 0],
           brainDecision = decideHeroAction({
             hpRatio: aiHero.hp / aiHero.maxHp,
@@ -7730,7 +8597,7 @@ export default function Seoul999mBelow() {
             : `아군을 공격한 ${buildDef(assistInstallation.kind).name}까지 실제 경로 ${assistThreat.plan.distance}칸으로 지원한다`;
           if (
             installationDistance <= basicRange &&
-            clearRay(aiHero.x, aiHero.y, assistInstallation.x, assistInstallation.y)
+            clearRay(aiHero.x, aiHero.y, assistInstallation.x, assistInstallation.y, aiHero.team)
           ) {
             aiHero.dir = cardinal(
               assistInstallation.x - aiHero.x,
@@ -7783,7 +8650,7 @@ export default function Seoul999mBelow() {
           );
           if (
             coreDistance <= basicRange &&
-            clearRay(aiHero.x, aiHero.y, opposingCore.x, opposingCore.y)
+            clearRay(aiHero.x, aiHero.y, opposingCore.x, opposingCore.y, aiHero.team)
           ) {
             aiHero.dir = cardinal(
               opposingCore.x - aiHero.x,
@@ -7825,13 +8692,13 @@ export default function Seoul999mBelow() {
             if (!target) return false;
             const action = heroAction(aiHero.heroId ?? "yoo-seungcheon", slot),
               effectiveRange = Math.max(2.5, action.range + action.radius);
-            return targetDistance <= effectiveRange && clearRay(aiHero.x, aiHero.y, target.x, target.y);
+            return targetDistance <= effectiveRange && clearRay(aiHero.x, aiHero.y, target.x, target.y, aiHero.team);
           };
         if (target && targetInSkillRange(4) && skillChainReady && decision.action === "ultimate" && cooldowns[3] <= now) return executeBattleHeroSkill(aiHero, target, 4);
         if (target && targetInSkillRange(2) && skillChainReady && decision.action === "skill2" && cooldowns[1] <= now) return executeBattleHeroSkill(aiHero, target, 2);
         if (target && targetInSkillRange(1) && skillChainReady && decision.action === "skill1" && cooldowns[0] <= now) return executeBattleHeroSkill(aiHero, target, 1);
         if (!companion && !sentry && decision.action === "drill" && cooldowns[2] <= now) return executeBattleHeroDrill(aiHero, engagementGoal);
-        if (target && targetDistance <= basicRange && clearRay(aiHero.x, aiHero.y, target.x, target.y)) {
+        if (target && targetDistance <= basicRange && clearRay(aiHero.x, aiHero.y, target.x, target.y, aiHero.team)) {
           aiHero.dir = cardinal(target.x - aiHero.x, target.y - aiHero.y);
           if (basicRange > 2) fire(aiHero, target.x - aiHero.x, target.y - aiHero.y, "arrow", aiHero.attack);
           else melee(aiHero, { x: target.x - aiHero.x, y: target.y - aiHero.y }, 4);
@@ -7866,7 +8733,7 @@ export default function Seoul999mBelow() {
           : coreApproachPlan?.step ?? nextPath(aiHero, goal);
         if (!step && target && !targetPlan)
           step = cardinal(target.x - aiHero.x, target.y - aiHero.y);
-        let blockingInstallation = step ? turretAt(aiHero.x + step.x, aiHero.y + step.y) : undefined,
+        let blockingInstallation = step ? turretAt(aiHero.x + step.x, aiHero.y + step.y, aiHero.team) : undefined,
           obstruction = blockingInstallation?.team !== aiHero.team
             ? { turret: blockingInstallation, approach: { x: aiHero.x, y: aiHero.y }, distance: 0 }
             : !step && !target
@@ -7884,7 +8751,7 @@ export default function Seoul999mBelow() {
           if (skillChainReady && decision.action === "skill2" && cooldowns[1] <= now && executeBattleHeroSiegeSkill(aiHero, siegeTarget, 2)) return;
           if (skillChainReady && decision.action === "skill1" && cooldowns[0] <= now && executeBattleHeroSiegeSkill(aiHero, siegeTarget, 1)) return;
           aiHero.dir = cardinal(siegeTarget.x - aiHero.x, siegeTarget.y - aiHero.y);
-          if (basicRange > 2 && siegeDistance <= basicRange && clearRay(aiHero.x, aiHero.y, siegeTarget.x, siegeTarget.y))
+          if (basicRange > 2 && siegeDistance <= basicRange && clearRay(aiHero.x, aiHero.y, siegeTarget.x, siegeTarget.y, aiHero.team))
             fire(aiHero, siegeTarget.x - aiHero.x, siegeTarget.y - aiHero.y, "arrow", aiHero.attack);
           else melee(aiHero, { x: siegeTarget.x - aiHero.x, y: siegeTarget.y - aiHero.y }, 4);
           setBattleHeroAction(aiHero, 0, Math.max(380, aiHero.attackInterval * 720));
@@ -7902,13 +8769,13 @@ export default function Seoul999mBelow() {
         if (
           grid[aiHero.y + step.y]?.[aiHero.x + step.x]?.type === 4 ||
           baseAt(aiHero.x + step.x, aiHero.y + step.y) ||
-          turretAt(aiHero.x + step.x, aiHero.y + step.y)?.team === aiHero.team ||
+          turretAt(aiHero.x + step.x, aiHero.y + step.y, aiHero.team)?.team === aiHero.team ||
           occupied(aiHero.x + step.x, aiHero.y + step.y, aiHero)
         ) {
           const alternatives = DIRS
             .filter((direction) => {
               const x = aiHero.x + direction.x, y = aiHero.y + direction.y, tile = grid[y]?.[x];
-              return tile && tile.type !== 4 && !baseAt(x, y) && !turretAt(x, y) && !occupied(x, y, aiHero);
+              return tile && tile.type !== 4 && !baseAt(x, y) && !turretAt(x, y, aiHero.team) && !occupied(x, y, aiHero);
             })
             .sort((a, b) => {
               const distanceA = Math.hypot(aiHero.x + a.x - goal.x, aiHero.y + a.y - goal.y),
@@ -7924,7 +8791,7 @@ export default function Seoul999mBelow() {
           )
           : undefined;
         if (grid[aiHero.y]?.[aiHero.x]?.hazard === "steam" && selectedBattleMap.hazard === "steam") {
-          const safe = DIRS.find((direction) => open(aiHero.x + direction.x, aiHero.y + direction.y) && grid[aiHero.y + direction.y]?.[aiHero.x + direction.x]?.hazard !== "steam");
+          const safe = DIRS.find((direction) => openForTeam(aiHero.x + direction.x, aiHero.y + direction.y, aiHero.team) && grid[aiHero.y + direction.y]?.[aiHero.x + direction.x]?.hazard !== "steam");
           if (safe) moveOrDig(aiHero, safe.x, safe.y, companionMoveDuration);
           else moveOrDig(aiHero, step.x, step.y, companionMoveDuration);
         } else moveOrDig(aiHero, step.x, step.y, companionMoveDuration);
@@ -8004,7 +8871,7 @@ export default function Seoul999mBelow() {
           start = unitWorld(target);
         for (let i = 0; i < Math.min(1, cells); i++) {
           const nx = target.x + d.x, ny = target.y + d.y;
-          if (!open(nx, ny) || occupied(nx, ny, target) || turretAt(nx, ny) || baseAt(nx, ny)) break;
+          if (!openForTeam(nx, ny, target.team) || occupied(nx, ny, target) || turretAt(nx, ny, target.team) || baseAt(nx, ny)) break;
           target.x = nx;
           target.y = ny;
           if (target === hero) {
@@ -8155,10 +9022,10 @@ export default function Seoul999mBelow() {
         const desiredDistance = id === "ahn-seona" ? 4.1 : id === "kimssi" ? 1.05 : 1.35,
           movementChoices = DIRS.map((d) => {
             const x = fighter.x + d.x, y = fighter.y + d.y;
-            if (!open(x, y) || occupied(x, y, fighter) || turretAt(x, y) || baseAt(x, y)) return null;
+            if (!openForTeam(x, y, fighter.team) || occupied(x, y, fighter) || turretAt(x, y) || baseAt(x, y)) return null;
             const nextDistance = Math.hypot(target.x - x, target.y - y),
               crowd = arenaFighters().filter((unit) => unit !== fighter && Math.hypot(unit.x - x, unit.y - y) <= 1.2).length,
-              exits = DIRS.filter((exit) => open(x + exit.x, y + exit.y)).length;
+              exits = DIRS.filter((exit) => openForTeam(x + exit.x, y + exit.y, fighter.team)).length;
             return { d, score: Math.abs(nextDistance - desiredDistance) * 3.2 + crowd * 1.6 - exits * 0.35 + random() * 0.8 };
           }).filter(Boolean) as Array<{ d: { x: number; y: number }; score: number }>;
         movementChoices.sort((a, b) => a.score - b.score);
@@ -8206,7 +9073,7 @@ export default function Seoul999mBelow() {
           campaignCompanionGoalOffsets(radius)
             .map((offset) => ({ x: hero.x + offset.x, y: hero.y + offset.y }))
             .filter((goal) =>
-              open(goal.x, goal.y) &&
+              openForTeam(goal.x, goal.y, fighter.team) &&
               (!occupied(goal.x, goal.y, fighter) || (goal.x === fighter.x && goal.y === fighter.y)) &&
               !turretAt(goal.x, goal.y) &&
               !baseAt(goal.x, goal.y),
@@ -8244,7 +9111,7 @@ export default function Seoul999mBelow() {
               const routeDistance = reachable.get(`${x},${y}`);
               if (
                 routeDistance === undefined ||
-                !open(x, y) ||
+                !openForTeam(x, y, fighter.team) ||
                 occupied(x, y, fighter) ||
                 turretAt(x, y) ||
                 baseAt(x, y)
@@ -8352,7 +9219,7 @@ export default function Seoul999mBelow() {
           enemyInActiveCombat = Boolean(
             enemy &&
             Math.hypot(enemy.unit.x - fighter.x, enemy.unit.y - fighter.y) <= Math.max(3.5, basicRange + 1) &&
-            clearRay(fighter.x, fighter.y, enemy.unit.x, enemy.unit.y),
+            clearRay(fighter.x, fighter.y, enemy.unit.x, enemy.unit.y, fighter.team),
           ),
           installationInActiveCombat = Boolean(
             (assistThreat?.kind === "installation" || localInstallation) &&
@@ -8363,14 +9230,14 @@ export default function Seoul999mBelow() {
               return Boolean(
                 installation &&
                 Math.hypot(installation.x - fighter.x, installation.y - fighter.y) <= Math.max(3.5, basicRange + 1) &&
-                clearRay(fighter.x, fighter.y, installation.x, installation.y)
+                clearRay(fighter.x, fighter.y, installation.x, installation.y, fighter.team)
               );
             })(),
           ),
           coreInActiveCombat = Boolean(
             localCorePlan &&
             Math.hypot(opposingCore.x - fighter.x, opposingCore.y - fighter.y) <= Math.max(3.5, basicRange + 1) &&
-            clearRay(fighter.x, fighter.y, opposingCore.x, opposingCore.y),
+            clearRay(fighter.x, fighter.y, opposingCore.x, opposingCore.y, fighter.team),
           ),
           emergencyRejoin = !forcedRejoin && campaignCompanionShouldEmergencyRejoin(
             Boolean(followPlan),
@@ -8510,6 +9377,7 @@ export default function Seoul999mBelow() {
       fighter.act = 320;
     };
     const stepTurrets = (dt: number) => {
+        if (isSecretTunnel && battlePhase === "prepare") return;
         for (const t of turrets) {
           const def = buildDef(t.kind);
           if (
@@ -8533,7 +9401,7 @@ export default function Seoul999mBelow() {
                   u.alive &&
                   u.team !== t.team &&
                   Math.hypot(u.x - t.x, u.y - t.y) <= stats.range &&
-                  ((isCampaign && campaignChapter === 2 && t.team === "red") || clearRay(t.x, t.y, u.x, u.y)),
+                  ((isCampaign && campaignChapter === 2 && t.team === "red") || clearRay(t.x, t.y, u.x, u.y, t.team)),
               )
               .sort((a, b) => {
                 const escortPriority = isCampaign && campaignChapter === 2
@@ -8620,7 +9488,11 @@ export default function Seoul999mBelow() {
             ty < 0 ||
             tx >= COLS ||
             ty >= ROWS ||
-            (grid[ty][tx].type !== 0 && s.kind !== "acid" && !s.ignoresTerrain)
+            ((isSecretTunnel
+              ? !openForTeam(tx, ty, s.team)
+              : grid[ty][tx].type !== 0) &&
+              s.kind !== "acid" &&
+              !s.ignoresTerrain)
           ) {
             if (
               (s.kind === "blast" || s.splash) &&
@@ -8635,7 +9507,13 @@ export default function Seoul999mBelow() {
           }
           let hit = false;
           for (const u of units)
-            if (u.alive && u.team !== s.team && !s.hitIds?.includes(u.id)) {
+            if (
+              u.alive &&
+              u.networkVisible !== false &&
+              u.team !== s.team &&
+              !s.hitIds?.includes(u.id) &&
+              canEngageAt(s.team, u.x, u.y)
+            ) {
               const p = unitWorld(u),
                 m = segmentMetric(p.x, p.y, ox, oy, s.x, s.y);
               if (m.distance < 13) {
@@ -8679,7 +9557,7 @@ export default function Seoul999mBelow() {
             }
           if (hit) continue;
           for (const t of turrets)
-            if (t.hp > 0 && t.team !== s.team) {
+            if (t.hp > 0 && t.team !== s.team && canEngageAt(s.team, t.x, t.y)) {
               const m = segmentMetric(
                 t.x * S + S / 2,
                 t.y * S + S / 2,
@@ -8720,7 +9598,7 @@ export default function Seoul999mBelow() {
                 s.x,
                 s.y,
               );
-            if (m.distance < 24) {
+            if (m.distance < 24 && canEngageAt(s.team, b.x, b.y)) {
               damageBase(s.team, s.damage, s.source);
               s.hitBase = true;
               burst(b.x, b.y, s.team === "blue" ? "#ff705e" : "#65e4ef", 12);
@@ -8755,14 +9633,20 @@ export default function Seoul999mBelow() {
                 nearest = candidate;
             };
             for (const u of units)
-              if (u.alive && u.team === "red" && !s.hitIds?.includes(u.id)) {
+              if (
+                u.alive &&
+                u.networkVisible !== false &&
+                u.team === "red" &&
+                !s.hitIds?.includes(u.id) &&
+                canEngageAt("blue", u.x, u.y)
+              ) {
                 const p = unitWorld(u),
                   m = segmentMetric(p.x, p.y, ax, ay, bx, by);
                 if (m.distance <= 26)
                   consider({ kind: "unit", at: m.t, unit: u });
               }
             for (const t of turrets)
-              if (t.hp > 0 && t.team === "red") {
+              if (t.hp > 0 && t.team === "red" && canEngageAt("blue", t.x, t.y)) {
                 const m = segmentMetric(
                   t.x * S + S / 2,
                   t.y * S + S / 2,
@@ -8782,7 +9666,7 @@ export default function Seoul999mBelow() {
               bx,
               by,
             );
-            if (enemyHp > 0 && bm.distance <= 29)
+            if (enemyHp > 0 && bm.distance <= 29 && canEngageAt("blue", ENEMY.x, ENEMY.y))
               consider({ kind: "base", at: bm.t });
             if (nearest) {
               const chosen = nearest as {
@@ -9030,6 +9914,10 @@ export default function Seoul999mBelow() {
         }
       },
       attackCommandAtPointer = () => {
+        if (isSecretTunnel && battlePhase === "prepare") {
+          setMessage("준비 단계 · 공격은 잠겨 있다 · 굴착과 방어 준비에 집중");
+          return;
+        }
         const w = cursorWorld(),
           x = Math.max(1, Math.min(COLS - 2, Math.floor(w.x / S))),
           y = Math.max(1, Math.min(ROWS - 2, Math.floor(w.y / S))),
@@ -9056,6 +9944,10 @@ export default function Seoul999mBelow() {
       },
       beginSkillAim = (skill: 2 | 3) => {
         if (!hero.alive || (skill === 2 ? cd2 : cd4) > 0) return;
+        if (isSecretTunnel && battlePhase === "prepare") {
+          setMessage("준비 단계 · 공격 기술은 침공 개시 후 사용할 수 있다");
+          return;
+        }
         cancelRouteEdit();
         if (buildMode !== "none") selectBuildMode("none");
         fillMode = false;
@@ -9085,6 +9977,26 @@ export default function Seoul999mBelow() {
         else ultimateSlash(dx, dy);
       },
       processCommand = (cmd: string) => {
+        if (cmd.startsWith("allocation:")) {
+          const allocation = cmd.slice(11) as TunnelRouteAllocation;
+          if (!["50:50", "75:25", "25:75"].includes(allocation)) return;
+          tunnelAllocations.blue = allocation;
+          units
+            .filter((unit) => unit.alive && unit.team === "blue" && unit.role === "minion")
+            .forEach((unit, index) => {
+              unit.routeId = chooseSecretTunnelRoute(index, tunnelAllocations.blue);
+              unit.routePointIndex = 0;
+              unit.routeWaitMs = 0;
+            });
+          setMessage(
+            allocation === "50:50"
+              ? "진군 배분 · A/B 균등 50:50"
+              : allocation === "75:25"
+                ? "진군 배분 · A 집중 75:25"
+                : "진군 배분 · B 집중 25:75",
+          );
+          return;
+        }
         if (cmd.startsWith("stance:")) {
           const [, routeId, stance] = cmd.split(":");
           setRouteStance(routeId as RouteId, stance as RouteStance);
@@ -9120,6 +10032,14 @@ export default function Seoul999mBelow() {
         }
         if (!cmd.startsWith("cursor:") && !cmd.startsWith("camera:"))
           cancelRouteEdit();
+        if (
+          isSecretTunnel &&
+          battlePhase === "prepare" &&
+          (cmd === "skill1" || cmd === "aim2" || cmd === "skill2" || cmd === "aim3" || cmd === "skill3" || cmd.startsWith("tactical:"))
+        ) {
+          setMessage("준비 단계 · 공격과 전술지원은 침공 개시 후 사용할 수 있다");
+          return;
+        }
         if (cmd === "skill1") {
           whirlwind();
           setSelected(0);
@@ -9260,6 +10180,10 @@ export default function Seoul999mBelow() {
             selectBuildMode("none");
             return;
           }
+          if (activeMatchConfig?.kind === "online") {
+            setMessage("온라인 대전은 일시정지할 수 없다");
+            return;
+          }
           pausedRef.current = !pausedRef.current;
           keys.clear();
           mobileMove.current = null;
@@ -9300,7 +10224,6 @@ export default function Seoul999mBelow() {
         if (e.code === "Digit3") beginSkillAim(3);
         if (e.code === "Digit4") {
           processCommand("skill4");
-          publishOnlineInput({ type: "drill" });
         }
         const moveDirection =
           e.code === "KeyW" || e.code === "ArrowUp" ? { x: 0, y: -1 } :
@@ -9467,6 +10390,53 @@ export default function Seoul999mBelow() {
         combatSlotReservations.clear();
         lastMarchReservationFrame = reservationFrame;
       }
+      if (!isCampaign) {
+        // Restore the authoritative phase/tunnels before any local deadline or
+        // queued command can run after an online host reconnects.
+        syncOnlineBattleState(dt);
+        processOnlineBattleCommands();
+      }
+      if (isSecretTunnel) {
+        battlePhaseTimeLeft = activeMatchConfig?.kind === "online" && battlePhaseEndsAt > 0
+          ? Math.max(0, battlePhaseEndsAt - Date.now())
+          : Math.max(0, battlePhaseTimeLeft - dt);
+        const authoritativeClock =
+          activeMatchConfig?.kind !== "online" ||
+          !onlineRoom ||
+          !onlineIdentity ||
+          onlineRoom.hostId === onlineIdentity.playerId;
+        if (battlePhase === "prepare") {
+          if (!secretBlueConnected && battlePhaseTimeLeft <= 30_000 && !secretWarning30Shown) {
+            secretWarning30Shown = true;
+            tone("warning");
+            setMessage("30초 · 유효 전선 미연결 · 종료 시 고립 패배");
+          }
+          if (!secretBlueConnected && battlePhaseTimeLeft <= 10_000 && !secretWarning10Shown) {
+            secretWarning10Shown = true;
+            tone("warning");
+            setMessage("10초 · 적 거점 또는 상대 연결 터널까지 반드시 뚫어라");
+          }
+          if (authoritativeClock && battlePhaseTimeLeft <= 0) enterSecretTunnelAssault();
+        } else if (
+          authoritativeClock &&
+          battlePhase === "assault" &&
+          battlePhaseTimeLeft <= 0
+        ) {
+          const resolution = resolveSecretTunnelTimeout({
+            blue: { coreHp: allyHp / 600, shieldHp: allyShield / 180 },
+            red: { coreHp: enemyHp / 600, shieldHp: enemyShield / 180 },
+          });
+          finishSecretTunnelBattle(
+            resolution.winner,
+            resolution.reason === "core-hp"
+              ? "6분 종료 · 남은 코어 비율 판정"
+              : resolution.reason === "shield-hp"
+                ? "6분 종료 · 코어 동률, 방어막 비율 판정"
+                : "6분 종료 · 코어와 방어막 동률 · 무승부",
+          );
+        }
+        if (ended) return;
+      }
       cd1 -= dt;
       cd2 -= dt;
       cd3 -= dt;
@@ -9506,7 +10476,7 @@ export default function Seoul999mBelow() {
       while (commands.current.length) processCommand(commands.current.shift()!);
       updateBuildWork(dt);
       runEnemyConstruction();
-      if (!isCampaign && spawnClock <= 0) {
+      if (!isCampaign && (!isSecretTunnel || battlePhase === "assault") && spawnClock <= 0) {
         wave++;
         const guaranteedLevel = guaranteedMinionLevelForWave(wave);
         for (const team of ["blue", "red"] as Team[])
@@ -9605,6 +10575,7 @@ export default function Seoul999mBelow() {
       }
       for (let i = spawnQueue.length - 1; i >= 0; i--) {
         const order = spawnQueue[i];
+        if (isSecretTunnel && battlePhase === "prepare") continue;
         order.delay -= dt;
         const stageReady = isCampaign && (campaignChapter === 4 || campaignChapter === 5)
             ? true
@@ -9654,6 +10625,11 @@ export default function Seoul999mBelow() {
         }
       }
       for (const mine of [...groundMines]) {
+        if (isSecretTunnel && battlePhase === "prepare") {
+          mine.armedAt += dt;
+          mine.detonateAt += dt;
+          continue;
+        }
         const steppedOn = now >= mine.armedAt && units.some(
           (unit) =>
             unit.alive &&
@@ -9666,6 +10642,7 @@ export default function Seoul999mBelow() {
       const steamPhase = now % 5200;
       if (
         !isCampaign &&
+        (!isSecretTunnel || battlePhase === "assault") &&
         selectedBattleMap.hazard === "steam" &&
         steamPhase >= 2400 &&
         steamPhase < 3900 &&
@@ -9779,7 +10756,7 @@ export default function Seoul999mBelow() {
             if (scout.act <= 0) {
               const nx = scout.x + 1;
               scout.dir = { x: 1, y: 0 };
-              if (open(nx, scout.y) && !occupied(nx, scout.y, scout))
+              if (openForTeam(nx, scout.y, scout.team) && !occupied(nx, scout.y, scout))
                 commitGridMove(scout, nx, scout.y, 320);
               scout.minionVisual = "move";
               scout.minionVisualUntil = performance.now() + 280;
@@ -9813,8 +10790,6 @@ export default function Seoul999mBelow() {
           scientist.act = 1000 / scientist.moveSpeed;
         }
       if (!isCampaign) {
-        processOnlineBattleCommands();
-        syncOnlineBattleState(dt);
         for (const aiHero of battleAiHeroes) stepBattleHero(aiHero);
       }
       if (isCampaign && !(campaignChapter === 3 && campaignIntroClock < 5900))
@@ -9974,6 +10949,10 @@ export default function Seoul999mBelow() {
           missionStage: campaignChapter === 5 ? campaign5GatePhase : campaignPhase,
           missionSubjectsAlive: missionSubjectsAlive.length,
           missionSubjectsCompleted: missionSubjectsCompleted.length,
+          battlePhase: isSecretTunnel ? battlePhase : "open-front",
+          battleTime: isSecretTunnel ? Math.max(0, Math.ceil(battlePhaseTimeLeft / 1000)) : 0,
+          battleConnected: !isSecretTunnel || secretBlueConnected,
+          routeAllocation: tunnelAllocations.blue,
         });
         lastHud = now;
       }
@@ -10625,7 +11604,9 @@ export default function Seoul999mBelow() {
     const tileHash = (x: number, y: number, salt = 0) =>
         Math.abs((x * 73856093) ^ (y * 19349663) ^ (salt * 83492791)) >>> 0,
       solidTile = (x: number, y: number) =>
-        !!grid[y]?.[x] && grid[y][x].type !== 0,
+        isSecretTunnel
+          ? !openForTeam(x, y, "blue")
+          : !!grid[y]?.[x] && grid[y][x].type !== 0,
       drawTile = (t: Tile, x: number, y: number) => {
         const px = x * S - cam.x,
           py = y * S - cam.y,
@@ -12149,7 +13130,12 @@ export default function Seoul999mBelow() {
     const drawTacticalAreas = () => {
       const now = performance.now();
       for (const event of tacticalAreas) {
-        if (!visible(event.x, event.y)) continue;
+        if (
+          !visible(event.x, event.y) ||
+          (event.team !== "blue" && isSecretTunnel && (
+            battlePhase === "prepare" || !openForTeam(event.x, event.y, "blue")
+          ))
+        ) continue;
         const definition = tacticalDefinition(event.faction, "area"),
           x = event.x * S + S / 2 - cam.x,
           y = event.y * S + S / 2 - cam.y,
@@ -12260,7 +13246,13 @@ export default function Seoul999mBelow() {
     const drawFields = () => {
       const now = performance.now();
       for (const f of fields) {
-        if (!visible(Math.floor(f.x), Math.floor(f.y))) continue;
+        const fieldX = Math.floor(f.x), fieldY = Math.floor(f.y), fieldTeam = f.team ?? "blue";
+        if (
+          !visible(fieldX, fieldY) ||
+          (fieldTeam !== "blue" && isSecretTunnel && (
+            battlePhase === "prepare" || !openForTeam(fieldX, fieldY, "blue")
+          ))
+        ) continue;
         const x = f.x * S + S / 2 - cam.x,
           y = f.y * S + S / 2 - cam.y,
           r = f.radius * S,
@@ -12532,6 +13524,41 @@ export default function Seoul999mBelow() {
         draw();
         ctx.restore();
       },
+      drawTunnelAccessOverlay = (sx: number, sy: number, ex: number, ey: number) => {
+        if (!isSecretTunnel || !secretTunnelOverlay) return;
+        ctx.save();
+        for (let y = sy; y <= ey; y++)
+          for (let x = sx; x <= ex; x++) {
+            if (!seen[y]?.[x]) continue;
+            const tile = secretTunnelOverlay.tiles[y]?.[x];
+            if (!tile || !tunnelAccessIncludesTeam(tile.access, "blue")) continue;
+            const px = x * S - cam.x,
+              py = y * S - cam.y,
+              shared = tile.sharedBackbone,
+              contactBulkhead =
+                tile.access === TUNNEL_ACCESS.shared &&
+                !tile.sharedBackbone;
+            ctx.strokeStyle = shared || contactBulkhead ? "#ffe071cc" : "#58e5ef88";
+            ctx.lineWidth = shared || contactBulkhead ? 2 : 1;
+            ctx.setLineDash(shared ? [5, 4] : contactBulkhead ? [2, 3] : []);
+            ctx.strokeRect(px + 2, py + 2, S - 4, S - 4);
+            if (shared || contactBulkhead) {
+              ctx.globalAlpha = contactBulkhead ? 0.52 : 0.28;
+              ctx.beginPath();
+              ctx.moveTo(px + 3, py + S - 5);
+              ctx.lineTo(px + S - 5, py + 3);
+              ctx.stroke();
+              if (contactBulkhead) {
+                ctx.beginPath();
+                ctx.moveTo(px + 3, py + 3);
+                ctx.lineTo(px + S - 5, py + S - 5);
+                ctx.stroke();
+              }
+              ctx.globalAlpha = 1;
+            }
+          }
+        ctx.restore();
+      },
       render = () => {
         ctx.fillStyle = "#050607";
         ctx.fillRect(0, 0, viewWidth, viewHeight);
@@ -12544,8 +13571,9 @@ export default function Seoul999mBelow() {
             if (!seen[y][x]) {
               ctx.fillStyle = "#111416";
               ctx.fillRect(x * S - cam.x, y * S - cam.y, S + 1, S + 1);
-            } else drawTile(visible(x, y) ? grid[y][x] : memory[y][x], x, y);
+            } else drawTile(visible(x, y) ? tileForLocalTunnelView(x, y) : memory[y][x], x, y);
           }
+        drawTunnelAccessOverlay(sx, sy, ex, ey);
         drawTacticalAreas();
         drawFields();
         drawGroundMines();
@@ -12568,7 +13596,7 @@ export default function Seoul999mBelow() {
               drawCampaignVent,
             ),
           });
-        if (!(isCampaign && campaignChapter === 1) && (visible(ENEMY.x, ENEMY.y) || (isCampaign && campaignChapter === 5)))
+        if (!(isCampaign && campaignChapter === 1) && (isSecretTunnel || visible(ENEMY.x, ENEMY.y) || (isCampaign && campaignChapter === 5)))
           actors.push({
             z: (ENEMY.y + 1) * S,
             draw: () => drawScaledWorldActor(
@@ -12578,7 +13606,14 @@ export default function Seoul999mBelow() {
             ),
           });
         for (const t of turrets)
-          if (t.campaignActivated !== false && (t.team === "blue" || visible(t.x, t.y)))
+          if (
+            t.campaignActivated !== false &&
+            (t.team === "blue" || (
+              battlePhase !== "prepare" &&
+              visible(t.x, t.y) &&
+              (!isSecretTunnel || openForTeam(t.x, t.y, "blue"))
+            ))
+          )
             actors.push({
               z: t.y * S + S / 2,
               draw: () => drawScaledWorldActor(
@@ -12589,7 +13624,15 @@ export default function Seoul999mBelow() {
             });
         const renderNow = performance.now();
         for (const u of units) {
-          if (u.campaignActivated === false || (u.team !== "blue" && !visible(u.x, u.y))) continue;
+          if (
+            u.campaignActivated === false ||
+            u.networkVisible === false ||
+            (u.team !== "blue" && (
+              battlePhase === "prepare" ||
+              !visible(u.x, u.y) ||
+              (isSecretTunnel && !openForTeam(u.x, u.y, "blue"))
+            ))
+          ) continue;
           // 확대 배율의 중심점도 실제 보간 위치를 써야 한다. 논리 목적 칸을 쓰면
           // 1.5배 화면에서 다음 이동이 시작될 때마다 유닛이 반 칸 뒤로 튕긴다.
           const world = interpolatedUnitWorld(u, renderNow);
@@ -12620,7 +13663,12 @@ export default function Seoul999mBelow() {
             continue;
           const tx = Math.floor(s.x / S),
             ty = Math.floor(s.y / S);
-          if (s.team === "blue" || visible(tx, ty)) {
+          if (
+            s.team === "blue" ||
+            (battlePhase !== "prepare" &&
+              visible(tx, ty) &&
+              (!isSecretTunnel || openForTeam(tx, ty, "blue")))
+          ) {
             ctx.fillStyle =
               s.kind === "blast"
                 ? "#ffad38"
@@ -12634,7 +13682,7 @@ export default function Seoul999mBelow() {
         for (const p of dust) {
           const tx = Math.floor(p.x / S),
             ty = Math.floor(p.y / S);
-          if (visible(tx, ty)) {
+          if (visible(tx, ty) && (!isSecretTunnel || openForTeam(tx, ty, "blue"))) {
             ctx.globalAlpha = Math.max(0, p.life / 550);
             ctx.fillStyle = p.color;
             ctx.fillRect(p.x - 3 - cam.x, p.y - 3 - cam.y, 6, 6);
@@ -12642,6 +13690,12 @@ export default function Seoul999mBelow() {
           }
         }
         for (const popup of damagePopups) {
+          const popupTileX = Math.floor(popup.x / S),
+            popupTileY = Math.floor(popup.y / S);
+          if (
+            !visible(popupTileX, popupTileY) ||
+            (isSecretTunnel && !openForTeam(popupTileX, popupTileY, "blue"))
+          ) continue;
           const progress = 1 - popup.life / popup.maxLife;
           ctx.save();
           ctx.globalAlpha = Math.min(1, popup.life / 180);
@@ -12671,6 +13725,12 @@ export default function Seoul999mBelow() {
           ctx.restore();
         }
         drawFog();
+        if (isSecretTunnel && battlePhase === "prepare")
+          drawScaledWorldActor(
+            ENEMY.x * S + S / 2,
+            ENEMY.y * S + S / 2,
+            () => drawBase(ENEMY, "red", enemyHp),
+          );
         drawAimGuide();
       };
     const drawMinimap = () => {
@@ -12734,14 +13794,28 @@ export default function Seoul999mBelow() {
       dot(ALLY.x, ALLY.y, "#61ecfa", 5);
       if (
         !(isCampaign && campaignChapter === 1) &&
-        (visible(ENEMY.x, ENEMY.y) || (isCampaign && campaignChapter === 5))
+        (isSecretTunnel || visible(ENEMY.x, ENEMY.y) || (isCampaign && campaignChapter === 5))
       )
         dot(ENEMY.x, ENEMY.y, campaignChapter === 5 ? "#ffe071" : "#ff6857", campaignChapter === 5 ? 7 : 5);
       for (const t of turrets)
-        if (t.hp > 0 && (t.team === "blue" || visible(t.x, t.y)))
+        if (
+          t.hp > 0 &&
+          (t.team === "blue" || (
+            battlePhase !== "prepare" &&
+            visible(t.x, t.y) &&
+            (!isSecretTunnel || openForTeam(t.x, t.y, "blue"))
+          ))
+        )
           dot(t.x, t.y, t.team === "blue" ? "#54dce9" : "#f25b4c", 3);
       for (const u of units)
-        if (u.alive && (u.team === "blue" || visible(u.x, u.y)))
+        if (
+          u.alive &&
+          (u.team === "blue" || (
+            battlePhase !== "prepare" &&
+            visible(u.x, u.y) &&
+            (!isSecretTunnel || openForTeam(u.x, u.y, "blue"))
+          ))
+        )
           dot(
             u.x,
             u.y,
@@ -12874,6 +13948,8 @@ export default function Seoul999mBelow() {
   if (screen === "cinematic")
     return (
       <main className="campaign-cinematic chapter-cinematic-player">
+        {/* Approved chapter cinematics contain their Korean story text in-picture. */}
+        {/* eslint-disable-next-line jsx-a11y/media-has-caption */}
         <video
           key={campaignChapter}
           autoPlay
@@ -13116,6 +14192,11 @@ export default function Seoul999mBelow() {
                     <input value={nickname} maxLength={12} onChange={(e) => setNickname(e.target.value)} placeholder="닉네임" />
                   </label>
                   <div className="online-room-options">
+                    <fieldset className="battle-ruleset-select">
+                      <legend>대전 규칙</legend>
+                      <button className={selectedRuleset === "secret-tunnel" ? "active" : ""} onClick={() => setSelectedRuleset("secret-tunnel")}>비밀 굴착전</button>
+                      <button className={selectedRuleset === "open-front" ? "active" : ""} onClick={() => setSelectedRuleset("open-front")}>개방 전선전</button>
+                    </fieldset>
                     <fieldset>
                       <legend>대전 인원</legend>
                       <button className={skirmishTeamSize === 1 ? "active" : ""} onClick={() => setSkirmishTeamSize(1)}>1:1</button>
@@ -13163,7 +14244,7 @@ export default function Seoul999mBelow() {
                   <div className="room-code-card">
                     <span>ROOM CODE</span>
                     <strong>{onlineRoom.code}</strong>
-                    <small>{onlineRoom.teamSize}:{onlineRoom.teamSize} · {battleMap(onlineRoom.mapId).name}</small>
+                    <small>{onlineRoomRuleset(onlineRoom) === "secret-tunnel" ? "비밀 굴착전" : "개방 전선전"} · {onlineRoom.teamSize}:{onlineRoom.teamSize} · {battleMap(onlineRoom.mapId).name}</small>
                     <small>
                       공용 전장 #{onlineRoom.seed.toString(16).toUpperCase()} · 거점 위치는 경기마다
                       대칭 후보에서 확정
@@ -13200,7 +14281,7 @@ export default function Seoul999mBelow() {
                     })()}
                   </div>
                   {onlineRoom.status === "countdown" && <strong className="online-countdown">전투 동기화 중 · 잠시 후 투입</strong>}
-                  {onlineRoom.status === "finished" && <strong className="online-countdown">{onlineRoom.winner === "blue" ? "A TEAM" : "B TEAM"} 승리 · {onlineRoom.hostId === onlineIdentity?.playerId ? "재대전을 선택할 수 있습니다" : "방장의 재대전 선택을 기다리는 중"}</strong>}
+                   {onlineRoom.status === "finished" && <strong className="online-countdown">{onlineRoom.winner === "draw" ? "무승부" : `${onlineRoom.winner === "blue" ? "A TEAM" : "B TEAM"} 승리`} · {onlineRoom.hostId === onlineIdentity?.playerId ? "재대전을 선택할 수 있습니다" : "방장의 재대전 선택을 기다리는 중"}</strong>}
                 </div>
               )}
               <p className="lobby-notice">{lobbyNotice}</p>
@@ -13368,6 +14449,15 @@ export default function Seoul999mBelow() {
                 </button>
               </div>
               <div className="skirmish-config">
+                <div className="battle-ruleset-select" role="radiogroup" aria-label="대전 규칙 선택">
+                  <b>대전 규칙</b>
+                  <button role="radio" aria-checked={selectedRuleset === "secret-tunnel"} className={selectedRuleset === "secret-tunnel" ? "active" : ""} onClick={() => setSelectedRuleset("secret-tunnel")}>
+                    <strong>비밀 굴착전</strong><small>2분 비밀 굴착 · 4분 침공</small>
+                  </button>
+                  <button role="radio" aria-checked={selectedRuleset === "open-front"} className={selectedRuleset === "open-front" ? "active" : ""} onClick={() => setSelectedRuleset("open-front")}>
+                    <strong>개방 전선전</strong><small>기존 자유 굴착 · 무제한 전선</small>
+                  </button>
+                </div>
                 <div className="team-size-select">
                   <b>대전 인원</b>
                   {([1, 2] as TeamSize[]).map((size) => (
@@ -13477,7 +14567,7 @@ export default function Seoul999mBelow() {
                 </div>
               )}
               <button className="skirmish-start" onClick={() => startSkirmish(selectedHeroId)}>
-                {skirmishTeamSize}:{skirmishTeamSize} · {battleMap(selectedMapId).name} 전투 시작
+                {selectedRuleset === "secret-tunnel" ? "비밀 굴착전" : "개방 전선전"} · {skirmishTeamSize}:{skirmishTeamSize} · {battleMap(selectedMapId).name} 시작
               </button>
             </section>
           )}
@@ -13520,9 +14610,18 @@ export default function Seoul999mBelow() {
     );
   const moveStart = (x: number, y: number) => () => {
       mobileMove.current = { x, y };
+      const publishMove = () => publishOnlineInput({ type: "move", dx: x, dy: y });
+      publishMove();
+      if (mobileOnlineMoveTimerRef.current !== null)
+        window.clearInterval(mobileOnlineMoveTimerRef.current);
+      mobileOnlineMoveTimerRef.current = window.setInterval(publishMove, 300);
     },
     moveStop = () => {
       mobileMove.current = null;
+      if (mobileOnlineMoveTimerRef.current !== null) {
+        window.clearInterval(mobileOnlineMoveTimerRef.current);
+        mobileOnlineMoveTimerRef.current = null;
+      }
     };
   return (
     <main className="underground-game">
@@ -13532,7 +14631,7 @@ export default function Seoul999mBelow() {
       </aside>
       <header>
         <div>
-          <b>ALLY CORE</b>
+          <b>아군 코어</b>
           <i>
             <span style={{ width: `${hud.ally / 6}%` }} />
           </i>
@@ -13549,7 +14648,9 @@ export default function Seoul999mBelow() {
               : campaignChapter === 3
                 ? `제3장 · 격리 아레나 · 대련 상대 ${hud.enemies}명`
               : `제${campaignChapter}장 · ${selectedCampaignInfo.subtitle} · 적 ${hud.enemies}기${hud.missionTime ? ` · ${Math.floor(hud.missionTime / 60)}:${String(hud.missionTime % 60).padStart(2, "0")}` : ""}`
-            : `${battleMap(activeMatchConfig?.mapId ?? selectedMapId).name} · WAVE ${hud.wave} · 진군대 LV.${hud.minionLevel}`}
+            : isSecretBattleUi
+              ? `${hud.battlePhase === "prepare" ? "비밀 굴착" : hud.battlePhase === "assault" ? "침공" : "작전 종료"} ${Math.floor(hud.battleTime / 60)}:${String(hud.battleTime % 60).padStart(2, "0")} · ${battleMap(activeMatchConfig.mapId).name}`
+              : `${battleMap(activeMatchConfig?.mapId ?? selectedMapId).name} · WAVE ${hud.wave} · 진군대 LV.${hud.minionLevel}`}
         </h1>
         <div className="red">
           <b>
@@ -13559,7 +14660,7 @@ export default function Seoul999mBelow() {
                 ? "PYEONGTAEK GATE"
                 : isCampaign && campaignChapter === 5
                   ? "CHEONAN SURVIVAL CORE"
-                : "ENEMY CORE"}
+                : "적 코어"}
           </b>
           <i>
             <span
@@ -13591,6 +14692,24 @@ export default function Seoul999mBelow() {
         ESC 메뉴
       </button>
       <section className="minefield">
+        {isSecretBattleUi && (
+          <section className={`secret-phase-guide ${hud.battlePhase} ${hud.battleConnected ? "connected" : "disconnected"}`} aria-label="비밀 굴착전 진행 상태">
+            <header>
+              <span>{hud.battlePhase === "prepare" ? "준비 2분" : hud.battlePhase === "assault" ? "침공 4분" : "작전 종료"}</span>
+              <strong>{Math.floor(hud.battleTime / 60)}:{String(hud.battleTime % 60).padStart(2, "0")}</strong>
+            </header>
+            {hud.battlePhase === "prepare" ? (
+              <ol>
+                <li><b>1</b> 적 거점 확인</li>
+                <li><b>2</b> 터널 연결</li>
+                <li><b>3</b> 광석·방어 선택</li>
+              </ol>
+            ) : (
+              <p>A/B 공격로 개방 · {hud.routeAllocation === "50:50" ? "균등" : hud.routeAllocation === "75:25" ? "A 집중" : "B 집중"}</p>
+            )}
+            <em>{hud.battleConnected ? "유효 전선 연결" : "미연결 · 준비 종료 시 고립 패배"}</em>
+          </section>
+        )}
         {isCampaign && (
           <section
             className={`mission-objective-card ${missionGuideCollapsed ? "collapsed" : ""}`}
@@ -13793,12 +14912,29 @@ export default function Seoul999mBelow() {
           </nav>
         )}
         <div className="route-hotkeys" aria-label="진군 분대 지시">
-          {(["A", "B"] as RouteId[]).map((id) => (
-            <section key={id} aria-label={`${id} 분대 태세`}>
-              <kbd>CTRL+{id === "A" ? "1" : "2"}</kbd>
-              <div>{(["assault", "guard", "capture"] as RouteStance[]).map((stance) => <button key={stance} className={routeStances[id] === stance ? "active" : ""} onClick={() => command(`stance:${id}:${stance}`)}>{stance === "assault" ? "돌격" : stance === "guard" ? "경계" : "점령"}</button>)}</div>
+          {isSecretBattleUi ? (
+            <section className="route-allocation" aria-label="A/B 진군 배분">
+              <kbd>A/B</kbd>
+              <div>
+                {([[
+                  "50:50", "균등",
+                ], [
+                  "75:25", "A 집중",
+                ], [
+                  "25:75", "B 집중",
+                ]] as Array<[TunnelRouteAllocation, string]>).map(([allocation, label]) => (
+                  <button key={allocation} className={hud.routeAllocation === allocation ? "active" : ""} onClick={() => command(`allocation:${allocation}`)}>
+                    {label}<small>{allocation}</small>
+                  </button>
+                ))}
+              </div>
             </section>
-          ))}
+          ) : (["A", "B"] as RouteId[]).map((id) => (
+              <section key={id} aria-label={`${id} 분대 태세`}>
+                <kbd>CTRL+{id === "A" ? "1" : "2"}</kbd>
+                <div>{(["assault", "guard", "capture"] as RouteStance[]).map((stance) => <button key={stance} className={routeStances[id] === stance ? "active" : ""} onClick={() => command(`stance:${id}:${stance}`)}>{stance === "assault" ? "돌격" : stance === "guard" ? "경계" : "점령"}</button>)}</div>
+              </section>
+            ))}
         </div>
         <aside>
           <div className="active hero-status">
@@ -13863,6 +14999,7 @@ export default function Seoul999mBelow() {
           <button
             className={`icon-command ${hud.fillMode ? "active" : ""}`}
             onClick={() => command("fill")}
+            disabled={isSecretBattleUi && hud.battlePhase !== "prepare"}
             data-tooltip="커서 위치 땅 메우기 · E 즉시 시전 · 15 크레딧"
             title="커서 위치 땅 메우기 · 15 크레딧"
           >
@@ -13873,22 +15010,24 @@ export default function Seoul999mBelow() {
           <button
             className={`icon-command ${!hud.item1 ? "empty" : ""}`}
             onClick={() => command("item1")}
+            disabled={activeMatchConfig?.kind === "online"}
             data-tooltip={hud.item1 ? `${SUPPLY_ITEMS[hud.item1].name} · ${SUPPLY_ITEMS[hud.item1].effect}` : "Q 빈 슬롯 · 전투 전에 아이템을 선택하세요"}
             title={hud.item1 ? `${SUPPLY_ITEMS[hud.item1].name} · ${SUPPLY_ITEMS[hud.item1].effect}` : "Q 빈 슬롯"}
           >
             <CommandIcon kind={hud.item1 ?? "medKit"} />
             <kbd>Q</kbd>
-            <span className="command-state">{hud.item1 ? "사용" : "비어 있음"}</span>
+            <span className="command-state">{activeMatchConfig?.kind === "online" ? "온라인 잠금" : hud.item1 ? "사용" : "비어 있음"}</span>
           </button>
           <button
             className={`icon-command ${!hud.item2 ? "empty" : ""}`}
             onClick={() => command("item2")}
+            disabled={activeMatchConfig?.kind === "online"}
             data-tooltip={hud.item2 ? `${SUPPLY_ITEMS[hud.item2].name} · ${SUPPLY_ITEMS[hud.item2].effect}` : "R 빈 슬롯 · 전투 전에 아이템을 선택하세요"}
             title={hud.item2 ? `${SUPPLY_ITEMS[hud.item2].name} · ${SUPPLY_ITEMS[hud.item2].effect}` : "R 빈 슬롯"}
           >
             <CommandIcon kind={hud.item2 ?? "armorPlate"} />
             <kbd>R</kbd>
-            <span className="command-state">{hud.item2 ? "사용" : "비어 있음"}</span>
+            <span className="command-state">{activeMatchConfig?.kind === "online" ? "온라인 잠금" : hud.item2 ? "사용" : "비어 있음"}</span>
           </button>
         </div>
         <div className="skillbar">
@@ -13928,10 +15067,10 @@ export default function Seoul999mBelow() {
             <kbd>3</kbd>
             <span className="command-state">{hud.cd4 ? `${hud.cd4}s` : "조준"}</span>
           </button>
-          <button className="icon-command" onClick={() => command("skill4")} data-tooltip={`굴착 · ${activeHeroDef.skills[2]} · 클릭 즉시 발동`} title={`굴착 · ${activeHeroDef.skills[2]} · 클릭 즉시 발동`}>
+          <button className="icon-command" disabled={isSecretBattleUi && hud.battlePhase !== "prepare"} onClick={() => command("skill4")} data-tooltip={isSecretBattleUi && hud.battlePhase !== "prepare" ? "지반 고정 · 침공 중 굴착 불가" : `굴착 · ${activeHeroDef.skills[2]} · 클릭 즉시 발동`} title={isSecretBattleUi && hud.battlePhase !== "prepare" ? "지반 고정" : `굴착 · ${activeHeroDef.skills[2]} · 클릭 즉시 발동`}>
             <CommandIcon kind="drill" />
             <kbd>4</kbd>
-            <span className="command-state">{hud.cd3 ? `${hud.cd3}s` : "즉시"}</span>
+            <span className="command-state">{isSecretBattleUi && hud.battlePhase !== "prepare" ? "지반 고정" : hud.cd3 ? `${hud.cd3}s` : "굴착"}</span>
           </button>
         </div>
         <div className="mobile-pad">
@@ -13983,8 +15122,7 @@ export default function Seoul999mBelow() {
         <b>◈ 전선 기록</b>
         <p>{message}</p>
         <span>
-          클릭=이동 · Ctrl+클릭=기본공격 · Ctrl+1/2=진군 지시 · 1·2 일반기 · 3
-          고유기 · 4 굴착 · B 건설 · Shift 생존기 · E 메우기 · Q/R 아이템
+          클릭 이동·굴착 · Ctrl+클릭 공격 · 1~4 기술 · B 건설 · Ctrl+1/2 A/B 지시
         </span>
       </footer>
       {talentTierOpen && !outcome && (
@@ -14053,26 +15191,42 @@ export default function Seoul999mBelow() {
               {outcome === "win"
                 ? isCampaign
                   ? `CHAPTER ${String(campaignChapter).padStart(2, "0")} COMPLETE`
-                  : "ENEMY CORE COLLAPSED"
+                  : isSecretBattleUi
+                    ? "TUNNEL OPERATION WON"
+                    : "ENEMY CORE COLLAPSED"
+                : outcome === "draw"
+                  ? isSecretBattleUi ? "TUNNEL OPERATION DRAW" : "BOTH CORES STANDING"
                 : isCampaign && defeatSummary
                   ? "HERO COMBAT DISABLED"
-                  : "ALLY CORE COLLAPSED"}
+                  : isSecretBattleUi ? "TUNNEL OPERATION FAILED" : "ALLY CORE COLLAPSED"}
             </span>
             <h2>
               {outcome === "win"
                 ? isCampaign
                   ? `제${campaignChapter}장 작전 성공`
-                  : "지하 전선 돌파"
-                : isCampaign ? `제${campaignChapter}장 작전 실패` : "생존 거점 함락"}
+                  : isSecretBattleUi ? "비밀 굴착 작전 승리" : "지하 전선 돌파"
+                : outcome === "draw"
+                  ? "쌍방 생존 · 작전 무승부"
+                  : isCampaign
+                    ? `제${campaignChapter}장 작전 실패`
+                    : isSecretBattleUi ? "비밀 굴착 작전 실패" : "생존 거점 함락"}
             </h2>
             <p>
               {outcome === "win"
                 ? isCampaign
                   ? `${selectedCampaignInfo.title} 작전을 완료했습니다.`
-                  : "네가 만든 땅굴을 따라 아군이 적 거점을 무너뜨렸습니다."
+                  : isSecretBattleUi
+                    ? message
+                    : "네가 만든 땅굴을 따라 아군이 적 거점을 무너뜨렸습니다."
+                : outcome === "draw"
+                  ? isSecretBattleUi
+                    ? message
+                    : "코어와 방어막 우위를 가리지 못했습니다. 굴착량이나 처치 수는 승패에 사용하지 않습니다."
                 : isCampaign && defeatSummary
                   ? `${defeatSummary.killer}의 ${defeatSummary.action}에 ${defeatSummary.amount} 피해를 받고 전투불능이 되었습니다.`
-                  : isCampaign ? `${selectedCampaignInfo.title} 작전 조건을 달성하지 못했습니다.` : "적 굴착대가 우리 생존 거점을 파괴했습니다."}
+                  : isCampaign
+                    ? `${selectedCampaignInfo.title} 작전 조건을 달성하지 못했습니다.`
+                    : isSecretBattleUi ? message : "적 굴착대가 우리 생존 거점을 파괴했습니다."}
             </p>
             {outcome === "lose" && isCampaign && defeatSummary && (
               <section className="defeat-recap" aria-label="최근 피해 기록">

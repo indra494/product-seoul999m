@@ -3,6 +3,12 @@ import { HEROES, type FactionId } from "./content";
 export type TeamSize = 1 | 2;
 export type MatchKind = "computer" | "online";
 export type ControllerKind = "local" | "remote" | "ai";
+export type BattleRuleset = "secret-tunnel" | "open-front";
+export const DEFAULT_BATTLE_RULESET: BattleRuleset = "secret-tunnel";
+
+export const resolveBattleRuleset = (
+  value?: BattleRuleset | string | null,
+): BattleRuleset => value === "open-front" ? "open-front" : DEFAULT_BATTLE_RULESET;
 export type BattleMapId =
   | "central-exchange"
   | "flooded-pump"
@@ -28,6 +34,7 @@ export type TeamConfig = {
 
 export type MatchConfig = {
   kind: MatchKind;
+  ruleset: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
   seed: number;
@@ -51,6 +58,8 @@ const factionHeroes = (faction: FactionId) =>
 
 export const validateMatchConfig = (config: MatchConfig) => {
   const errors: string[] = [];
+  if (config.ruleset !== "secret-tunnel" && config.ruleset !== "open-front")
+    errors.push(`알 수 없는 대전 규칙: ${String(config.ruleset)}`);
   for (const team of config.teams) {
     if (team.slots.length !== config.teamSize)
       errors.push(`${team.faction} 팀의 슬롯 수가 ${config.teamSize}명이 아닙니다.`);
@@ -68,6 +77,7 @@ export const validateMatchConfig = (config: MatchConfig) => {
 };
 
 export const createComputerMatch = (input: {
+  ruleset?: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
   playerHeroId: string;
@@ -96,6 +106,7 @@ export const createComputerMatch = (input: {
 
   const config: MatchConfig = {
     kind: "computer",
+    ruleset: resolveBattleRuleset(input.ruleset),
     teamSize: input.teamSize,
     mapId: input.mapId,
     seed,
@@ -129,6 +140,7 @@ export const createComputerMatch = (input: {
 };
 
 export const createOnlineMatch = (input: {
+  ruleset?: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
   seed: number;
@@ -161,6 +173,7 @@ export const createOnlineMatch = (input: {
       }));
   const config: MatchConfig = {
     kind: "online",
+    ruleset: resolveBattleRuleset(input.ruleset),
     teamSize: input.teamSize,
     mapId: input.mapId,
     seed: input.seed,

@@ -1,6 +1,29 @@
 import type { FactionId, MinionLevel } from "./content";
-import type { BattleMapId, TeamSize } from "./matchConfig";
+import type {
+  BattleMapId,
+  BattleRuleset,
+  TeamSize,
+} from "./matchConfig";
 import type { TacticalRole } from "./tacticalSupport";
+
+export type OnlineBattlePhase = "prepare" | "assault" | "finished";
+export type TunnelAccessMask = 0 | 1 | 2 | 3;
+export const ONLINE_ROUTE_ALLOCATIONS = ["50:50", "75:25", "25:75"] as const;
+export type OnlineRouteAllocation = (typeof ONLINE_ROUTE_ALLOCATIONS)[number];
+export type OnlineTunnelAccessCell = {
+  x: number;
+  y: number;
+  accessMask: TunnelAccessMask;
+  sharedBackbone?: boolean;
+  owner?: "blue" | "red";
+  /**
+   * Authoritative per-team excavation state. Secret-tunnel room views redact
+   * the opposing team's key before the snapshot leaves the Worker.
+   */
+  durability?: Partial<Record<"blue" | "red", number>>;
+  maxDurability?: Partial<Record<"blue" | "red", number>>;
+  excavatedBy?: TunnelAccessMask;
+};
 
 export type OnlineRoomPlayer = {
   id: string;
@@ -22,13 +45,17 @@ export type OnlineRoomState = {
   code: string;
   revision: number;
   hostId: string;
+  ruleset?: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
   status: "lobby" | "countdown" | "playing" | "finished";
   seed: number;
   countdownAt?: number;
-  winner?: "blue" | "red";
-  finishReason?: "core-destroyed" | "player-left";
+  preparationEndsAt?: number;
+  matchEndsAt?: number;
+  secretPreparationResolved?: boolean;
+  winner?: "blue" | "red" | "draw";
+  finishReason?: "core-destroyed" | "player-left" | "connection-failed" | "timeout";
   departedPlayerId?: string;
   players: OnlineRoomPlayer[];
   createdAt: number;
@@ -43,6 +70,13 @@ export type OnlineRoomView = Omit<OnlineRoomState, "players"> & { players: Onlin
 export type OnlineBattleSnapshot = {
   sequence: number;
   issuedAt: number;
+  lastAppliedCommandSequence?: number;
+  phase?: OnlineBattlePhase;
+  phaseTimeLeftMs?: number;
+  phaseEndsAt?: number;
+  tunnelAccess?: OnlineTunnelAccessCell[];
+  teamConnections?: Partial<Record<"blue" | "red", boolean>>;
+  teamRouteAllocations?: Partial<Record<"blue" | "red", OnlineRouteAllocation>>;
   wave: number;
   teamMinionLevels: Record<"blue" | "red", MinionLevel>;
   teamCredits: Record<"blue" | "red", number>;
@@ -108,11 +142,16 @@ export type OnlineBattleSnapshot = {
 export type OnlineBattleCommand = {
   sequence: number;
   playerId: string;
-  type: "move" | "attack" | "skill" | "drill" | "route" | "build" | "fill" | "tactical" | "research" | "elite";
+  type: "move" | "attack" | "skill" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
   x?: number;
   y?: number;
+  dx?: number;
+  dy?: number;
+  drillWidthBonus?: number;
+  drillCooldownMultiplier?: number;
   slot?: 1 | 2 | 4;
   route?: "A" | "B";
+  allocation?: OnlineRouteAllocation;
   kind?: string;
   tacticalRole?: TacticalRole;
   issuedAt: number;
@@ -122,6 +161,7 @@ export type RoomCreateRequest = {
   nickname: string;
   heroId: string;
   faction: FactionId;
+  ruleset?: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
 };
@@ -139,6 +179,13 @@ export const ONLINE_SNAPSHOT_INTERVAL_MS = 250;
 export const ONLINE_REMOTE_INTERPOLATION_MS = 300;
 export const ONLINE_SOCKET_HEARTBEAT_MS = 8_000;
 export const ONLINE_SOCKET_RECONNECT_MAX_MS = 5_000;
+
+export const onlineRoomRuleset = (
+  room: { ruleset?: BattleRuleset | string | null },
+): BattleRuleset => room.ruleset === "open-front" ? "open-front" : "secret-tunnel";
+
+export const isOnlineRouteAllocation = (value: unknown): value is OnlineRouteAllocation =>
+  typeof value === "string" && (ONLINE_ROUTE_ALLOCATIONS as readonly string[]).includes(value);
 
 export const roomCapacity = (teamSize: TeamSize) => teamSize * 2;
 

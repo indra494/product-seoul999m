@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { access, readFile } from "node:fs/promises";
 import { runInNewContext } from "node:vm";
+import ts from "typescript";
 import { BROWSER_EXTENSION_ERROR_GUARD_SCRIPT } from "../game/browserExtensionErrorGuard.ts";
 
 const root = new URL("../", import.meta.url);
@@ -241,15 +242,189 @@ test("seven maps, five organic BGM tracks, faction voices, and material combat s
 
 test("online room supports shared combat, local prediction, visual preload, and departure victory", async () => {
   const [room, client, worker, app, match] = await Promise.all([source("game/onlineRoom.ts"), source("game/onlineRoomClient.ts"), source("worker/index.ts"), source("app/Seoul999mBelow.tsx"), source("game/matchConfig.ts")]);
-  hasAll(room, ["teamSize", "ready", "countdown", "playing", "token", "commands", "snapshot", "teamMinionLevels", "teamCredits", "minions", "installations", "terrain", '"tactical"', '"research"', "opponentTeam", "shouldApplyAuthoritativeHeroPosition", '"player-left"']);
+  const actionBody = worker.slice(worker.indexOf("type RoomActionBody"), worker.indexOf("const responseJson")),
+    commandValidation = worker.slice(worker.indexOf('body.action === "command"'), worker.indexOf('body.action === "snapshot"'));
+  hasAll(room, ["teamSize", "ready", "countdown", "playing", "token", "commands", "snapshot", "lastAppliedCommandSequence", "preparationEndsAt", "matchEndsAt", "teamMinionLevels", "teamCredits", "minions", "installations", "terrain", '"tactical"', '"research"', '"elite"', '"allocation"', "teamConnections", "teamRouteAllocations", "ONLINE_ROUTE_ALLOCATIONS", "isOnlineRouteAllocation", "opponentTeam", "shouldApplyAuthoritativeHeroPosition", '"player-left"']);
   hasAll(client, ["createOnlineRoom", "joinOnlineRoom", "connectOnlineRoomSocket", "onlineRoomSocketUrl", "WebSocket.OPEN"]);
-  hasAll(worker, ["class RoomHub", "ROOMS", "RoomJoinRequest", "acceptWebSocket", "webSocketMessage", "webSocketClose", "alarm()", "ready", "start", "command", "snapshot", "finish", "rematch", '"tactical"', '"research"', "opponentTeam", 'finishReason = "player-left"', 'roomMatch[2] ?? ""']);
+  hasAll(worker, ["class RoomHub", "ROOMS", "RoomJoinRequest", "acceptWebSocket", "webSocketMessage", "webSocketClose", "alarm()", "ONLINE_ADJUDICATION_GRACE_MS", "ready", "start", "command", "snapshot", "finish", "rematch", '"tactical"', '"research"', '"elite"', "opponentTeam", 'finishReason = "player-left"', 'finishReason = "connection-failed"', 'finishReason = "timeout"', 'roomMatch[2] ?? ""']);
+  hasAll(actionBody, ['"route" | "allocation"', "allocation?: OnlineRouteAllocation"]);
+  hasAll(commandValidation, ['"route", "allocation"', "isOnlineRouteAllocation(command.allocation)", "잘못된 공격로 배분입니다."]);
   hasAll(match, ["canonicalLocalTeam: local.team", 'canonicalLocalTeam: "blue"']);
-  hasAll(app, ["onlineRoom", "onlineIdentity", "processOnlineBattleCommands", "publishOnlineInput", "localTeamForCanonical", "onlineTerrainChanges", "snapshot.minions", "snapshot.installations", "snapshot.terrain", "applyTeamRouteTarget", "shouldApplyAuthoritativeHeroPosition", "setUnitMoveVisual(synced, state.x, state.y, ONLINE_REMOTE_INTERPOLATION_MS)", "ONLINE_SNAPSHOT_INTERVAL_MS", "newestOnlineRoomView", "initialCanvasRect", "preloadRuntimeVisuals().then"]);
+  hasAll(app, ["onlineRoom", "onlineIdentity", "processOnlineBattleCommands", "publishOnlineInput", "localTeamForCanonical", "onlineTerrainChanges", "snapshot.minions", "snapshot.installations", "snapshot.terrain", "applyTeamRouteTarget", "shouldApplyAuthoritativeHeroPosition", "setUnitMoveVisual(synced, state.x, state.y, ONLINE_REMOTE_INTERPOLATION_MS)", "ONLINE_SNAPSHOT_INTERVAL_MS", "lastAppliedCommandSequence", "mergedCommands", "newestOnlineRoomView", "initialCanvasRect", "preloadRuntimeVisuals().then"]);
+  const updateBody = app.slice(app.indexOf("const update = (dt: number, now: number) =>"), app.indexOf("const draw =", app.indexOf("const update = (dt: number, now: number) =>")));
+  assert.ok(
+    updateBody.indexOf("syncOnlineBattleState(dt)") < updateBody.indexOf("if (isSecretTunnel)"),
+    "online snapshot restore must run before secret-tunnel deadline adjudication",
+  );
+  assert.ok(
+    updateBody.indexOf("syncOnlineBattleState(dt)") < updateBody.indexOf("processOnlineBattleCommands()"),
+    "host reconnect must restore the authoritative snapshot before replaying queued commands",
+  );
   assert.ok(app.includes("window.sessionStorage.getItem(`seoul999m-room-${roomCode}`)"), "room reconnect identity must stay isolated per browser tab");
   assert.ok(!app.includes("window.localStorage.getItem(`seoul999m-room-${roomCode}`)"), "a second tab must not inherit the host token");
   assert.ok(!app.includes("transformOnlinePoint"), "online clients must share canonical world coordinates");
   assert.ok(!worker.includes('if (room.status === "playing") member.aiControlled = true'), "a departed online player must end the match instead of becoming AI");
+});
+
+test("secret-tunnel online snapshots are filtered per team without changing open-front snapshots", async () => {
+  const worker = await source("worker/index.ts"),
+    snapshotFilter = worker.slice(worker.indexOf("const snapshotForTeam"), worker.indexOf("const publicRoom")),
+    broadcast = worker.slice(worker.indexOf("private broadcast"), worker.indexOf("private socketError"));
+
+  hasAll(worker, [
+    "onlineRoomRuleset",
+    "ruleset: onlineRoomRuleset({ ruleset: body.ruleset })",
+    "ruleset: onlineRoomRuleset(room)",
+    "snapshot: snapshotForTeam(room, viewer)",
+    "publicRoom(room, player)",
+    "publicRoom(room, reconnect)",
+  ]);
+  hasAll(snapshotFilter, [
+    'onlineRoomRuleset(room) === "open-front"',
+    'snapshot.phase !== "prepare"',
+    "ownPlayerIds.has(hero.playerId)",
+    "cell.accessMask === opponentAccessMask",
+    "cell.accessMask === 3",
+    "...snapshot",
+  ]);
+  hasAll(broadcast, [
+    "socket.deserializeAttachment()",
+    "viewer = room.players.find",
+    "publicRoom(room, viewer)",
+  ]);
+  assert.ok(
+    snapshotFilter.indexOf('onlineRoomRuleset(room) === "open-front"') < snapshotFilter.indexOf("return snapshot"),
+    "open-front rooms must return their authoritative snapshot without redaction",
+  );
+
+  const executable = ts.transpileModule(`
+    const onlineRoomRuleset = (room) => room.ruleset === "open-front" ? "open-front" : "secret-tunnel";
+    const HEROES = [];
+    ${snapshotFilter}
+    globalThis.runSnapshotForTeam = snapshotForTeam;
+  `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText,
+    context = {};
+  runInNewContext(executable, context);
+  const snapshot = {
+      sequence: 4,
+      issuedAt: 10,
+      phase: "prepare",
+      phaseTimeLeftMs: 42_000,
+      teamConnections: { blue: true, red: false },
+      wave: 0,
+      allyCore: { hp: 600, shield: 180 },
+      enemyCore: { hp: 600, shield: 180 },
+      heroes: [
+        { playerId: "blue-player", x: 1, y: 2, alive: true },
+        { playerId: "red-player", x: 3, y: 2, alive: true },
+      ],
+      minions: [],
+      installations: [],
+      terrain: [],
+      tunnelAccess: [
+        ...[0, 1, 2, 3].map((accessMask, x) => ({
+          x,
+          y: 2,
+          accessMask,
+          durability: { blue: 10 + x, red: 20 + x },
+          maxDurability: { blue: 30 + x, red: 40 + x },
+          excavatedBy: 3,
+        })),
+        {
+          x: 4, y: 2, accessMask: 0,
+          durability: { blue: 30, red: 25 }, maxDurability: { blue: 30, red: 40 }, excavatedBy: 0,
+        },
+        {
+          x: 5, y: 2, accessMask: 0,
+          durability: { blue: 15, red: 40 }, maxDurability: { blue: 30, red: 40 }, excavatedBy: 0,
+        },
+      ],
+    },
+    room = {
+      ruleset: "secret-tunnel",
+      hostId: "host-player",
+      snapshot,
+      players: [
+        { id: "host-player", team: "blue" },
+        { id: "blue-player", team: "blue" },
+        { id: "red-player", team: "red" },
+      ],
+    },
+    blueViewer = { id: "blue-player", team: "blue" },
+    redViewer = { id: "red-player", team: "red" },
+    blueView = context.runSnapshotForTeam(room, blueViewer),
+    redView = context.runSnapshotForTeam(room, redViewer);
+  assert.deepEqual(Array.from(blueView.heroes, (hero) => hero.playerId), ["blue-player"]);
+  assert.deepEqual(Array.from(redView.heroes, (hero) => hero.playerId), ["red-player"]);
+  assert.deepEqual(Object.keys(blueView.teamConnections), ["blue"]);
+  assert.equal(blueView.teamConnections.blue, true);
+  assert.deepEqual(Object.keys(redView.teamConnections), ["red"]);
+  assert.equal(redView.teamConnections.red, false);
+  assert.deepEqual(Array.from(blueView.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 5]);
+  assert.deepEqual(Array.from(redView.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 4]);
+  for (const cell of blueView.tunnelAccess) {
+    assert.deepEqual(Object.keys(cell.durability), ["blue"]);
+    assert.deepEqual(Object.keys(cell.maxDurability), ["blue"]);
+    assert.equal(cell.excavatedBy & 2, 0);
+  }
+  for (const cell of redView.tunnelAccess) {
+    assert.deepEqual(Object.keys(cell.durability), ["red"]);
+    assert.deepEqual(Object.keys(cell.maxDurability), ["red"]);
+    assert.equal(cell.excavatedBy & 1, 0);
+  }
+  assert.equal(blueView.allyCore, snapshot.allyCore);
+  assert.equal(blueView.enemyCore, snapshot.enemyCore);
+  assert.equal(blueView.phaseTimeLeftMs, 42_000);
+  assert.equal(
+    context.runSnapshotForTeam({ ...room, ruleset: "open-front" }, blueViewer),
+    snapshot,
+    "open-front must keep the original snapshot object",
+  );
+  const assault = context.runSnapshotForTeam(
+    { ...room, snapshot: { ...snapshot, phase: "assault" } },
+    blueViewer,
+  );
+  assert.equal(assault.heroes.length, 2, "assault reveals heroes for the normal client LOS pipeline");
+  assert.deepEqual(Array.from(assault.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 5]);
+
+  const anonymous = context.runSnapshotForTeam(room);
+  assert.deepEqual(Array.from(anonymous.tunnelAccess, (cell) => cell.accessMask), [3]);
+  assert.equal(anonymous.tunnelAccess[0].durability, undefined);
+  assert.equal(anonymous.tunnelAccess[0].maxDurability, undefined);
+  assert.equal(anonymous.tunnelAccess[0].excavatedBy, undefined);
+  assert.equal(anonymous.teamConnections, undefined);
+
+  const commandFilter = worker.slice(worker.indexOf("const commandsForViewer"), worker.indexOf("const publicRoom")),
+    commandExecutable = ts.transpileModule(`
+      const onlineRoomRuleset = (room) => room.ruleset === "open-front" ? "open-front" : "secret-tunnel";
+      ${commandFilter}
+      globalThis.runCommandsForViewer = commandsForViewer;
+    `, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.None } }).outputText,
+    commandContext = {};
+  runInNewContext(commandExecutable, commandContext);
+  const commands = [
+      { sequence: 1, playerId: "blue-player", type: "drill", x: 1, y: 2 },
+      { sequence: 2, playerId: "red-player", type: "drill", x: 8, y: 9 },
+    ],
+    commandRoom = { ...room, hostId: "blue-player", commands };
+  assert.equal(
+    commandContext.runCommandsForViewer(commandRoom, { id: "blue-player", team: "blue" }),
+    commands,
+    "the authoritative host must receive every command",
+  );
+  assert.deepEqual(
+    Array.from(
+      commandContext.runCommandsForViewer(commandRoom, { id: "red-player", team: "red" }),
+      (command) => command.playerId,
+    ),
+    ["red-player"],
+    "a non-host secret-tunnel viewer must not receive opponent coordinates",
+  );
+  assert.equal(
+    commandContext.runCommandsForViewer({ ...commandRoom, ruleset: "open-front" }, { id: "red-player", team: "red" }),
+    commands,
+    "open-front keeps the existing shared command stream",
+  );
 });
 
 test("campaign replay, briefing cards, and roster kit icons use live game data", async () => {
@@ -400,7 +575,7 @@ test("strategic squads keep exact Ctrl targets while the last edited lane avoids
   const app = await source("app/Seoul999mBelow.tsx");
   hasAll(app, [
     "route.points = [{ x, y }]",
-    "diverseRouteToGoal(base, target, open, avoidedCells, {",
+    "diverseRouteToGoal(base, target, (px, py) => openForTeam(px, py, team), avoidedCells, {",
     "hardAvoidRadius: 2",
     "oppositeSidePenalty: 18",
     "route.plannedCells = plan.cells.slice(1)",
