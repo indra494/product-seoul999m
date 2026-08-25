@@ -33,7 +33,7 @@ export const decideHeroAction = (context: HeroBrainContext): HeroBrainDecision =
     add("attack", 50 + (1 - context.targetHpRatio) * 28, "사거리 안의 적을 기본 공격한다");
   if (context.cooldowns[0] <= 0 && context.targetDistance < 5.8)
     add("skill1", 58 + context.enemiesInArea * 9, "전투 기술로 교전 우위를 만든다");
-  if (context.cooldowns[1] <= 0) {
+  if (context.cooldowns[1] <= 0 && context.targetDistance < 6.5) {
     const supportValue = context.role === "support" ? (1 - context.allyHpRatio) * 75 : 0,
       tankValue = context.role === "tank" && context.allyNearby ? 24 : 0;
     add("skill2", 48 + supportValue + tankValue + context.enemiesInArea * 5, "역할 기술의 효용이 높다");
@@ -46,4 +46,3 @@ export const decideHeroAction = (context: HeroBrainContext): HeroBrainDecision =
   choices.sort((a, b) => b.score - a.score || a.action.localeCompare(b.action));
   return choices[0];
 };
-

@@ -88,3 +88,29 @@
 ### AI 로봇 프롬프트
 
 `폐 CCTV·복사기 레이저 부품·가늘고 비뚤어진 포신과 붉은 조준 센서로 만든 직선 관통 광선기, 서로 높이가 다른 공업용 로켓 정확히 두 발과 노출 유압 장치를 얹은 무거운 궤도식 발사대, 엘리베이터 문·찌그러진 철판·볼트·고장 난 경고등으로 압착한 철갑격벽을 왼쪽부터 분리 배치. 숯빛 철·녹·더러운 베이지·바랜 안전 노랑, 붉은 센서와 청록 전력광. 매끈한 미래 병기·클린 메카·인간형 로봇 금지.`
+
+## v3 출전 지원 시설 — 2026-08-25
+
+| 종족 | 시설 | 설계 파일 | 런타임 파일 |
+|---|---|---|---|
+| 휴먼 | 출정 보급소 | `휴먼/v3/게임에셋/human-departure-supply-v1-alpha.png` | `public/assets/buildables/human/human-departure-supply-v1-alpha.png` |
+| 버그본 | 페로몬 유도탑 | `버그본/v3/게임에셋/bugborn-pheromone-guide-v1-alpha.png` | `public/assets/buildables/bugborn/bugborn-pheromone-guide-v1-alpha.png` |
+| AI 로봇 | 표적 중계기 | `AI로봇/v3/게임에셋/ai-target-relay-v1-alpha.png` | `public/assets/buildables/ai/ai-target-relay-v1-alpha.png` |
+
+- 생성 방식: Codex 내장 이미지 생성 도구, 프로젝트 바인딩 이미지 생성 모드
+- 공통 프롬프트 방향: 총기·포신이 없는 비공격 지원 장치, 투명 배경 단일 오브젝트, 한 타일 3/4 탑다운, 64~80px 가독성
+- 휴먼은 폐자판기·장비 지급대, 버그본은 페로몬 낭·촉수, AI는 센서·홀로그램 중계기로 역할을 구분한다.
+- 런타임 파일은 512×512 투명 PNG로 최적화했다.
+
+## v4 지역 제어 공격 설치물 — 2026-08-25
+
+| 종족 | 시설 | 설계 파일 | 런타임 파일 |
+|---|---|---|---|
+| 휴먼 | 고압 폐전기 함정 | `휴먼/v4/게임에셋/human-high-voltage-trap-v1-alpha.png` | `public/assets/buildables/human/human-high-voltage-trap-v1-alpha.png` |
+| 버그본 | 산성 포자낭 | `버그본/v4/게임에셋/bugborn-acid-spore-sac-v1-alpha.png` | `public/assets/buildables/bugborn/bugborn-acid-spore-sac-v1-alpha.png` |
+| AI 로봇 | 구속 전극기 T-3 | `AI로봇/v4/게임에셋/ai-restraint-electrode-t3-v1-alpha.png` | `public/assets/buildables/ai/ai-restraint-electrode-t3-v1-alpha.png` |
+
+- 생성 방식: Codex 내장 이미지 생성 도구, `stylized-concept` 게임 에셋 모드
+- 공통 조건: 실제 알파 투명 배경, 단일 한 타일 설치물, 3/4 탑다운, 고전 한국 PC 액션 RPG풍 픽셀 아트, 64~80px에서 식별 가능한 실루엣, 문자·상표·워터마크 없음
+- 휴먼은 폐배터리·연장선·구리 코일·청록 전기 아크, 버그본은 갑각·뼈고리·균사·산성 낭, AI는 폐변압기·엘리베이터 릴레이·비대칭 이중 전극으로 표현한다.
+- 런타임 파일은 512×512 투명 PNG로 최적화한다.

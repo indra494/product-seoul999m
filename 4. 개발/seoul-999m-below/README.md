@@ -18,7 +18,30 @@ npm run dev
 npm run build
 ```
 
-This starter does not use `wrangler.jsonc`.
+## Production deployment
+
+The repository now includes `wrangler.jsonc` for the Worker, static assets, and
+the `ROOMS` Durable Object. After local verification, sign in to Cloudflare and
+deploy the same build:
+
+```bash
+npm ci
+npm test
+npx wrangler login
+npm run deploy
+```
+
+The first deployment provisions the SQLite-backed `RoomHub` namespace. A custom
+domain is optional and can be attached from the Worker's Domains & Routes page.
+No D1 database is required for the current guest room flow; persistent accounts,
+rankings, moderation, and payments need a separate production data store.
+
+The current guest battle uses a host-authoritative simulation with Durable
+Object WebSocket room updates, commands, snapshots, reconnect handling, and a
+10-second disconnect result alarm. Before public ranked or paid service, move
+combat validation and the fixed-tick simulation fully into the Durable Object.
+The Korean operations checklist is maintained at
+`../../3. 설계/운영-배포-구성-v0.1.md`.
 
 ## Included Shape
 

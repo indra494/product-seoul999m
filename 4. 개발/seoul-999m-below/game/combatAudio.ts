@@ -1,6 +1,6 @@
-import type { HeroId } from "./content";
 import {
   COMBAT_SAMPLES,
+  HERO_VOICE_LINES,
   MUSIC_BY_CAMPAIGN,
   MUSIC_BY_MAP,
   MUSIC_TRACKS,
@@ -35,6 +35,8 @@ export class CombatAudio {
   private voicePriority = 0;
   private voiceUntil = 0;
   private activeVoice: HTMLAudioElement | null = null;
+  private voiceCache = new Map<string, HTMLAudioElement>();
+  private voiceReady = new Map<string, Promise<boolean>>();
   private duckTimer: ReturnType<typeof setTimeout> | null = null;
   private sampleCache = new Map<string, HTMLAudioElement>();
   private sampleCursor = new Map<string, number>();
@@ -54,6 +56,7 @@ export class CombatAudio {
   async unlock() {
     this.unlocked = true;
     this.preloadCombatSamples();
+    this.preloadVoiceLines();
     const context = this.ensureEffects();
     if (context?.state === "suspended") await context.resume().catch(() => undefined);
     if (this.desiredMusic) await this.playMusic(this.desiredMusic);
@@ -63,9 +66,21 @@ export class CombatAudio {
   async startCampaign(chapter: number) { await this.selectMusic(MUSIC_BY_CAMPAIGN[chapter] ?? "shelter-network"); }
   async startMenu() { await this.selectMusic("shelter-network"); }
 
+  async prepareHeroVoice(heroId: string) {
+    this.preloadVoiceLines();
+    const lines = Object.values(HERO_VOICE_LINES[heroId] ?? {}),
+      ready = await Promise.all(lines.map((line) => this.voiceReady.get(line.file) ?? false));
+    if (lines.length === 0 || ready.some((loaded) => !loaded))
+      throw new Error(`hero voice failed: ${heroId}`);
+  }
+
   private async selectMusic(id: MusicId) {
     this.desiredMusic = id;
     if (this.unlocked) await this.playMusic(id);
+  }
+
+  private musicVolume(id: MusicId | null) {
+    return id === "shelter-network" ? .22 : .32;
   }
 
   private async playMusic(id: MusicId) {
@@ -74,15 +89,18 @@ export class CombatAudio {
       if (this.music.paused) await this.music.play().catch(() => undefined);
       return;
     }
-    const previous = this.music, next = new Audio(MUSIC_TRACKS[id].file);
+    const previous = this.music,
+      previousTarget = this.musicVolume(this.currentMusic),
+      nextTarget = this.musicVolume(id),
+      next = new Audio(MUSIC_TRACKS[id].file);
     next.loop = true; next.preload = "auto"; next.volume = 0;
     this.music = next; this.currentMusic = id;
     await next.play().catch(() => undefined);
     const started = performance.now();
     const fade = () => {
       const progress = Math.min(1, (performance.now() - started) / 700);
-      next.volume = .38 * progress;
-      if (previous) previous.volume = Math.max(0, .38 * (1 - progress));
+      next.volume = nextTarget * progress;
+      if (previous) previous.volume = Math.max(0, previousTarget * (1 - progress));
       if (progress < 1) requestAnimationFrame(fade);
       else if (previous) { previous.pause(); previous.src = ""; }
     };
@@ -142,19 +160,22 @@ export class CombatAudio {
   }
 
   /** 캐릭터별 스킬음과 대사를 함께 재생한다. 필살기는 낮은 우선순위 대사를 끊는다. */
-  async skillCue(heroId: HeroId, slot: VoiceSlot, volume = 1, priority = slot === 4 ? 5 : 2) {
+  async skillCue(heroId: string, slot: VoiceSlot, volume = 1, priority = slot === 4 ? 5 : 2) {
     const line = voiceLine(heroId, slot);
     if (!line || !this.unlocked) return;
     const now = performance.now();
     if (now < this.voiceUntil && priority < this.voicePriority) return;
+    const previousPriority = this.voicePriority;
     this.voicePriority = priority;
     this.voiceUntil = now + (slot === 4 ? 2400 : 1300);
     this.skillSignature(heroId, slot, volume);
-    if (this.activeVoice && priority >= this.voicePriority) {
+    if (this.activeVoice && priority >= previousPriority) {
       this.activeVoice.pause();
       this.activeVoice.currentTime = 0;
     }
-    const audio = new Audio(line.file);
+    this.preloadVoiceLines();
+    const template = this.voiceCache.get(line.file),
+      audio = (template?.cloneNode(true) as HTMLAudioElement | undefined) ?? new Audio(line.file);
     audio.preload = "auto";
     audio.volume = Math.min(1, (slot === 4 ? .96 : .82) * volume);
     audio.playbackRate = Math.min(4, line.playbackRate * 2);
@@ -176,7 +197,7 @@ export class CombatAudio {
     this.music.volume = target;
     if (this.duckTimer) clearTimeout(this.duckTimer);
     this.duckTimer = setTimeout(() => {
-      if (this.music) this.music.volume = .38;
+      if (this.music) this.music.volume = this.musicVolume(this.currentMusic);
       this.duckTimer = null;
     }, duration);
   }
@@ -199,6 +220,24 @@ export class CombatAudio {
     }
   }
 
+  private preloadVoiceLines() {
+    if (typeof Audio === "undefined") return;
+    for (const line of Object.values(HERO_VOICE_LINES).flatMap((slots) => Object.values(slots))) {
+      if (this.voiceCache.has(line.file)) continue;
+      const audio = new Audio(line.file);
+      audio.preload = "auto";
+      const ready = audio.readyState >= 3
+        ? Promise.resolve(true)
+        : new Promise<boolean>((resolve) => {
+          audio.addEventListener("canplaythrough", () => resolve(true), { once: true });
+          audio.addEventListener("error", () => resolve(false), { once: true });
+        });
+      this.voiceReady.set(line.file, ready);
+      audio.load();
+      this.voiceCache.set(line.file, audio);
+    }
+  }
+
   private async playSample(key: string, files: string[], volume: number, throttle: number) {
     if (!this.unlocked || typeof Audio === "undefined" || files.length === 0) return;
     const now = performance.now(), last = this.lastSample.get(key) ?? -Infinity;
@@ -217,7 +256,7 @@ export class CombatAudio {
     await playable.play().catch(() => undefined);
   }
 
-  private skillSignature(heroId: HeroId, slot: VoiceSlot, volume: number) {
+  private skillSignature(heroId: string, slot: VoiceSlot, volume: number) {
     const context = this.ensureEffects();
     if (!context || context.state !== "running") return;
     let hash = 0;

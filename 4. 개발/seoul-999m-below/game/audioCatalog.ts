@@ -44,28 +44,28 @@ export const MUSIC_TRACKS: Record<
 > = {
   "shelter-network": {
     title: "생존본부 주파수",
-    file: "/assets/audio/bgm/01-shelter-network.wav?v=2",
-    bpm: 76,
+    file: "/assets/audio/bgm/01-shelter-network.wav?v=3",
+    bpm: 64,
   },
   "rust-rail-assault": {
     title: "녹슨 환승 전투",
-    file: "/assets/audio/bgm/02-rust-rail-assault.wav?v=2",
-    bpm: 96,
+    file: "/assets/audio/bgm/02-rust-rail-assault.wav?v=3",
+    bpm: 84,
   },
   "flooded-pressure": {
     title: "침수 압력 경보",
-    file: "/assets/audio/bgm/03-flooded-pressure.wav?v=2",
-    bpm: 82,
+    file: "/assets/audio/bgm/03-flooded-pressure.wav?v=3",
+    bpm: 72,
   },
   "root-signal": {
     title: "군체 신호",
-    file: "/assets/audio/bgm/04-root-signal.wav?v=2",
-    bpm: 88,
+    file: "/assets/audio/bgm/04-root-signal.wav?v=3",
+    bpm: 78,
   },
   "redline-siege": {
     title: "적색선 공성",
-    file: "/assets/audio/bgm/05-redline-siege.wav?v=2",
-    bpm: 112,
+    file: "/assets/audio/bgm/05-redline-siege.wav?v=3",
+    bpm: 92,
   },
 };
 

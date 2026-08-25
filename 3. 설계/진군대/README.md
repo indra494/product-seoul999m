@@ -39,3 +39,15 @@
 - 휴먼: 생활 고철·테이프·낡은 도시 물품으로 조립한 민방위대
 - 버그본: 갑각·턱·독침을 사용하는 오염 지하 진화 생물
 - AI 로봇: 폐기된 도시 유지보수 설비와 고철로 구성된 고장 난 기계군
+
+## v3 정예 공격병 — 2026-08-25
+
+| 종족 | 정예병 | 설계 파일 | 런타임 파일 |
+|---|---|---|---|
+| 휴먼 | 폐가전 중화기병 | `휴먼/v3/human-waste-heavy-v1-alpha.png` | `public/assets/minions/human/elite/human-waste-heavy-v1-alpha.png` |
+| 버그본 | 군체 포식장 | `버그본/v3/bugborn-hive-devourer-v1-alpha.png` | `public/assets/minions/bugborn/elite/bugborn-hive-devourer-v1-alpha.png` |
+| AI 로봇 | 철거 집행기 808 | `AI로봇/v3/ai-demolition-enforcer-808-v1-alpha.png` | `public/assets/minions/ai/elite/ai-demolition-enforcer-808-v1-alpha.png` |
+
+- 생성 방식: Codex 내장 이미지 생성 도구, 프로젝트 바인딩 이미지 생성 모드
+- 공통 프롬프트 방향: 투명 배경 단일 전신, 3/4 탑다운, 지하 포스트아포칼립스 픽셀·페인팅 혼합, 64px 표시 가독성, 글자·UI·로고 제외
+- 런타임 파일은 512×512 투명 PNG로 최적화했고 기존 v1·v2를 덮어쓰지 않는다.

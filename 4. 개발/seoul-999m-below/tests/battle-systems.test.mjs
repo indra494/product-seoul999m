@@ -1,14 +1,27 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BATTLE_MAPS, applyBattleMapLayout } from "../game/battleMaps.ts";
+import { BATTLE_MAPS, applyBattleMapLayout, battleExplorationSectors, resolveBattleSpawns, resolveLocalBattleSpawns } from "../game/battleMaps.ts";
 import { siegeResponse } from "../game/aiSiegeRules.ts";
 import { buildPlacementCost, nearbyAttackFacilityCount } from "../game/buildRules.ts";
 import { CORE_REGEN_DELAY_MS, coreRegenAmount, emergencyRepairAmount } from "../game/healingRules.ts";
 import { decideHeroAction } from "../game/heroBrain.ts";
+import { radialDrillOffsets } from "../game/drillRules.ts";
+import { BUILDABLES, HERO_LEVELS, MINIONS, MINION_LEVELS, minionLevelForWave, supportAuraAppliesToRole, supportAuraValue } from "../game/content.ts";
 import { HERO_KITS } from "../game/heroKits.ts";
-import { CAMPAIGN1_MAX_ACTIVE_INVADERS, CAMPAIGN1_REGROUP_AFTER_MS, CAMPAIGN1_RETREAT_AFTER_MS, CAMPAIGN1_WAVE_COUNTS, campaign1AdvanceWatch, campaign1BossShouldEnter, campaign1VictoryReady, shouldRemoveSpawnOrder, shouldUseCampaign1GuardGoal } from "../game/campaignRules.ts";
-import { canDamageCore, exposedCoreDamage } from "../game/coreCombatRules.ts";
+import { HERO_TALENT_TREES, TALENT_LEVELS, combineHeroTalentEffects, heroTalentChoices } from "../game/heroTalents.ts";
+import { CAMPAIGN1_MAX_ACTIVE_INVADERS, CAMPAIGN1_REGROUP_AFTER_MS, CAMPAIGN1_RETREAT_AFTER_MS, CAMPAIGN1_SCOUT_EXIT_MS, CAMPAIGN1_VENT_DELAY_MS, CAMPAIGN1_WAVE_COUNTS, CAMPAIGN2_SCIENTIST_START_DELAY_MS, CAMPAIGN_ASSIST_RADIUS, CAMPAIGN_COMPANION_AGGRO_DISTANCE, CAMPAIGN_COMPANION_ASSIST_DISTANCE, CAMPAIGN_COMPANION_ASSIST_MEMORY_MS, CAMPAIGN_COMPANION_BLOCKED_RECOVERY_MS, CAMPAIGN_COMPANION_DISCONNECTED_RECOVERY_MS, CAMPAIGN_COMPANION_HARD_RECOVERY_MS, CAMPAIGN_COMPANION_LEASH_DISTANCE, CAMPAIGN_COMPANION_RECOVERY_DISTANCE, CAMPAIGN_COMPANION_STALL_RECOVERY_MS, CAMPAIGN_SENTRY_AGGRO_DISTANCE, campaign1AdvanceWatch, campaign1BossShouldEnter, campaign1ShouldForceExit, campaign1VictoryReady, campaign2EscortOutcome, campaign3ArenaHeal, campaignCompanionGoalOffsets, campaignCompanionMode, campaignCompanionMoveDuration, campaignCompanionShouldEmergencyRejoin, campaignCompanionShouldHardRejoin, campaignShouldEngageLocalObjective, campaign5FirstGateReady, campaignStageIsActive, isCampaignSentryChapter, shouldRemoveSpawnOrder, shouldUseCampaign1GuardGoal } from "../game/campaignRules.ts";
+import { canDamageCore, canDamageShield, exposedCoreDamage } from "../game/coreCombatRules.ts";
+import { CAMPAIGN_OBJECTIVES, campaignObjectiveProgress } from "../game/campaignObjectives.ts";
+import { CAMPAIGN_CINEMATICS, CAMPAIGN_PROLOGUE_STORAGE_KEY, CAMPAIGN_PROLOGUE_VIDEO, campaignChapterStatus, completeCampaignChapter, hasSeenCampaignPrologue, parseCampaignChapterList, unlockedCampaignChapter } from "../game/campaignProgress.ts";
+import { attackPositionCandidates, diverseRouteToGoal, reachableFrontierGoal, shortestRouteToAny, stitchRoutePoints } from "../game/gridNavigation.ts";
 import { EMERGENCY_BREACH_DELAY_MS, canEmergencyBreach } from "../game/minionBreachRules.ts";
+import { MINION_COMBAT_SLOT_MEMORY_MS, MINION_FLANK_REPLAN_MS, chooseCombatApproachSlot, minionCombatDetourAllowance } from "../game/minionCoordination.ts";
+import { ONLINE_REMOTE_INTERPOLATION_MS, ONLINE_SNAPSHOT_INTERVAL_MS, ONLINE_SOCKET_HEARTBEAT_MS, ONLINE_SOCKET_RECONNECT_MAX_MS, newestOnlineRoomView, opponentTeam, shouldApplyAuthoritativeHeroPosition } from "../game/onlineRoom.ts";
+import { guaranteedMinionLevelForWave, minionResearchReady, minionResearchUnlockWave, nextMinionResearch, teamMinionLevels } from "../game/minionResearch.ts";
+import { ELITE_RECOVERY_SCALE, ELITE_TACTICAL_EFFECT_SCALE, TACTICAL_RECOVERY_FRACTION, TACTICAL_SHARED_COOLDOWN_MS, tacticalBuffVisual, tacticalDefinition } from "../game/tacticalSupport.ts";
+import { AUTONOMOUS_FRONTIER_REPLAN_MS, MINION_ENGAGEMENT_RADIUS, MINION_PURSUIT_DISTANCE, MINION_TARGET_MEMORY_MS, computerWaveFormation, frontLineScreenGoal, minionExplorationCohort, retainCoreDiscovery, skirmishHeroAggroRadius, skirmishHeroShouldPursue, teamHasSpottedCore, triangulateCoreAfterTimeout } from "../game/skirmishAi.ts";
+import { ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, REINFORCEMENT_MINION_CAP, canReserveElite, createEliteDeploymentState, reinforcementFormation, withReservedElite } from "../game/eliteMinions.ts";
+import { COMPUTER_CREDIT_MULTIPLIER, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, INSTALLATION_REWARD_RATE, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS, creditedAmount, installationKillCredits } from "../game/skirmishEconomy.ts";
 
 const blankGrid = () =>
   Array.from({ length: 36 }, (_, y) =>
@@ -18,6 +31,30 @@ const blankGrid = () =>
         : { type: 2, hp: 3, max: 3 },
     ),
   );
+
+test("campaign chapters unlock in order and keep completed missions replayable", () => {
+  assert.equal(hasSeenCampaignPrologue(null), false);
+  assert.equal(hasSeenCampaignPrologue("0"), false);
+  assert.equal(hasSeenCampaignPrologue("1"), true);
+  assert.equal(CAMPAIGN_PROLOGUE_STORAGE_KEY, "seoul999m.prologueSeen");
+  assert.equal(CAMPAIGN_PROLOGUE_VIDEO, "/assets/opening/seoul-999m-opening-v12.mp4");
+  assert.deepEqual(parseCampaignChapterList(null), []);
+  assert.deepEqual(parseCampaignChapterList('[3,1,1,9,"2"]'), [1, 3]);
+  assert.equal(unlockedCampaignChapter([]), 1);
+  assert.equal(campaignChapterStatus(1, []), "available");
+  assert.equal(campaignChapterStatus(2, []), "locked");
+
+  const afterOne = completeCampaignChapter([], 1);
+  assert.deepEqual(afterOne, [1]);
+  assert.equal(campaignChapterStatus(1, afterOne), "completed");
+  assert.equal(campaignChapterStatus(2, afterOne), "available");
+  assert.equal(campaignChapterStatus(3, afterOne), "locked");
+
+  const all = [1, 2, 3, 4, 5];
+  assert.equal(unlockedCampaignChapter(all), 5);
+  assert.equal(campaignChapterStatus(5, all), "completed");
+  assert.equal(CAMPAIGN_CINEMATICS[4], "/assets/campaign/cinematics/human_story_04.mp4");
+});
 
 const reachableWithDigging = (grid, start, goal) => {
   const queue = [start], seen = new Set([`${start.x},${start.y}`]);
@@ -36,6 +73,47 @@ const reachableWithDigging = (grid, start, goal) => {
   return seen.has(`${goal.x},${goal.y}`);
 };
 
+test("all twelve heroes have two meaningful choices at the slower levels 3, 6, and 9", () => {
+  assert.deepEqual(TALENT_LEVELS, [3, 6, 9]);
+  assert.equal(HERO_LEVELS.at(-1)?.level, 9);
+  assert.ok(HERO_LEVELS[1].xp >= 140, "early levels must no longer finish after one brief fight");
+  assert.equal(Object.keys(HERO_TALENT_TREES).length, 12);
+  for (const [heroId, tree] of Object.entries(HERO_TALENT_TREES)) {
+    assert.equal(tree.length, 6, `${heroId} must have three two-branch tiers`);
+    for (const level of TALENT_LEVELS)
+      assert.equal(heroTalentChoices(heroId, level).length, 2, `${heroId} level ${level}`);
+    assert.equal(new Set(tree.map((talent) => talent.id)).size, 6, `${heroId} talent ids`);
+    assert.ok(tree.every((talent) => talent.name && talent.description && talent.icon && Object.keys(talent.effect).length), `${heroId} talent presentation/effects`);
+  }
+  const tripleSlash = combineHeroTalentEffects("yoo-seungcheon", ["yoo-triple-delivery"]);
+  assert.equal(tripleSlash.basicCount, 3);
+  assert.equal(tripleSlash.basicDamageMultiplier, .58);
+  const layered = combineHeroTalentEffects("yoo-seungcheon", ["yoo-blue-overdrive", "yoo-drill-warranty", "yoo-unlimited"]);
+  assert.equal(layered.moveSpeedMultiplier, 1.12);
+  assert.equal(layered.drillWidthBonus, 1);
+  assert.equal(layered.ultimateCooldownMultiplier, .6);
+});
+
+test("all campaign chapters explain exact victory, defeat, and live progress", () => {
+  assert.equal(Object.keys(CAMPAIGN_OBJECTIVES).length, 5);
+  for (const chapter of [1, 2, 3, 4, 5]) {
+    assert.ok(CAMPAIGN_OBJECTIVES[chapter].victory, `chapter ${chapter} victory`);
+    assert.ok(CAMPAIGN_OBJECTIVES[chapter].defeat, `chapter ${chapter} defeat`);
+  }
+  assert.match(
+    campaignObjectiveProgress(1, { phase: 2, enemies: 4, subjectsAlive: 0, subjectsCompleted: 0, enemyCoreHp: 0, missionTime: 0 }),
+    /철각.*4기/,
+  );
+  assert.equal(
+    campaignObjectiveProgress(2, { phase: 0, enemies: 9, subjectsAlive: 2, subjectsCompleted: 0, enemyCoreHp: 0, missionTime: 0 }),
+    "박사 생존 2/3 · 평택 도착 0/1",
+  );
+  assert.equal(
+    campaignObjectiveProgress(5, { phase: 2, enemies: 5, subjectsAlive: 0, subjectsCompleted: 0, enemyCoreHp: 0, missionTime: 128 }),
+    "2/3단계 · 군체장 격파 · 남은 시간 2:08",
+  );
+});
+
 test("all seven maps stay symmetric in spawn distance and remain dig-connectable", () => {
   for (const map of BATTLE_MAPS) {
     const grid = blankGrid();
@@ -44,6 +122,81 @@ test("all seven maps stay symmetric in spawn distance and remain dig-connectable
     assert.equal(map.spawns.blue.x + map.spawns.red.x, 55, `${map.id} rotational spawn pair`);
     assert.equal(reachableWithDigging(grid, map.spawns.blue, map.spawns.red), true, `${map.id} connectivity`);
   }
+});
+
+test("battle seeds randomize every legal base pair while online clients keep one canonical world", () => {
+  for (const map of BATTLE_MAPS) {
+    const layouts = new Set();
+    for (let seed = 0; seed < 256; seed++) {
+      const resolved = resolveBattleSpawns(map, seed);
+      assert.notDeepEqual(resolved.blue, resolved.red, `${map.id} bases must not overlap`);
+      layouts.add(`${resolved.blue.x},${resolved.blue.y}>${resolved.red.x},${resolved.red.y}`);
+    }
+    assert.ok(layouts.size >= map.spawnPairs.length, `${map.id} must use all random spawn pairs`);
+  }
+
+  const map = BATTLE_MAPS[0],
+    seed = 98321,
+    blueSpawns = resolveLocalBattleSpawns(map, seed, "blue"),
+    redSpawns = resolveLocalBattleSpawns(map, seed, "red");
+  assert.deepEqual(blueSpawns.canonical, redSpawns.canonical);
+  assert.deepEqual(blueSpawns.ally, redSpawns.enemy);
+  assert.deepEqual(blueSpawns.enemy, redSpawns.ally);
+});
+
+test("computer scouts retain core intel and switch later waves to coordinated pressure", () => {
+  const core = { x: 49, y: 18 },
+    farScout = { alive: true, team: "red", x: 30, y: 18 },
+    nearScout = { alive: true, team: "red", x: 44, y: 18 };
+  assert.equal(teamHasSpottedCore([farScout], "red", core), false);
+  let known = retainCoreDiscovery(false, teamHasSpottedCore([nearScout], "red", core));
+  assert.equal(known, true);
+  known = retainCoreDiscovery(known, teamHasSpottedCore([], "red", core));
+  assert.equal(known, true, "team knowledge must survive the scout being destroyed");
+  assert.deepEqual(computerWaveFormation({ coreDiscovered: true, ownCoreDanger: false, wave: 2 }), [
+    "escort", "breaker", "breaker", "breaker",
+  ]);
+  assert.deepEqual(computerWaveFormation({ coreDiscovered: true, ownCoreDanger: true, wave: 2 }), [
+    "escort", "escort", "breaker", "shooter",
+  ]);
+  assert.deepEqual(frontLineScreenGoal({ x: 40, y: 18 }, { x: 49, y: 18 }, "artillery"), { x: 43, y: 18 });
+  const sectors = battleExplorationSectors(BATTLE_MAPS[0], { x: 6, y: 18 });
+  assert.ok(sectors.some((point) => point.x === 45 && point.y === 29));
+  assert.ok(sectors.some((point) => point.x === 28 && point.y === 30));
+});
+
+test("uncommanded squads advance to the reachable frontier and heroes keep a real pursuit", () => {
+  const sealedOpen = new Set(["1,1", "2,1", "1,2", "2,2"]),
+    sealedFrontier = reachableFrontierGoal(
+      { x: 1, y: 1 },
+      { x: 5, y: 1 },
+      (x, y) => sealedOpen.has(`${x},${y}`),
+    );
+  assert.deepEqual(sealedFrontier?.goal, { x: 2, y: 1 });
+  assert.equal(sealedFrontier?.reachedDesired, false);
+
+  const detourOpen = new Set([
+      "1,1", "1,2", "1,3", "1,4", "2,4", "3,4", "4,4", "5,4", "5,3", "5,2", "5,1",
+    ]),
+    detourFrontier = reachableFrontierGoal(
+      { x: 1, y: 1 },
+      { x: 5, y: 1 },
+      (x, y) => detourOpen.has(`${x},${y}`),
+    );
+  assert.deepEqual(detourFrontier?.goal, { x: 5, y: 1 });
+  assert.equal(detourFrontier?.reachedDesired, true);
+  assert.equal(detourFrontier?.travelDistance, 10);
+
+  const aggroRadius = skirmishHeroAggroRadius(7);
+  assert.equal(aggroRadius, 12);
+  assert.equal(skirmishHeroShouldPursue({ directDistance: 11, routeDistance: null, aggroRadius, locked: false }), true);
+  assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 26, aggroRadius, locked: true }), true);
+  assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 26, aggroRadius, locked: false }), false);
+  assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 29, aggroRadius, locked: true }), false);
+  assert.equal(triangulateCoreAfterTimeout(false, 23_999), false);
+  assert.equal(triangulateCoreAfterTimeout(false, 24_000), true);
+  assert.equal(triangulateCoreAfterTimeout(true, 0), true);
+  assert.equal(AUTONOMOUS_FRONTIER_REPLAN_MS, 3500);
 });
 
 test("each tactical map owns a distinct terrain signature", () => {
@@ -81,7 +234,7 @@ test("hero brain retreats, defends, supports and drills for the right emergencie
   assert.equal(decideHeroAction(context({ hpRatio: 0.12 })).action, "retreat");
   assert.equal(decideHeroAction(context({ coreDanger: 1 })).action, "regroup");
   assert.equal(
-    decideHeroAction(context({ role: "support", allyHpRatio: 0.1, cooldowns: [1, 0, 1, 1] })).action,
+    decideHeroAction(context({ role: "support", allyHpRatio: 0.1, targetDistance: 4, cooldowns: [1, 0, 1, 1] })).action,
     "skill2",
   );
   assert.equal(decideHeroAction(context({ routeBlocked: true, cooldowns: [1, 1, 0, 1] })).action, "drill");
@@ -101,17 +254,224 @@ test("all twelve heroes expose a complete distinct action kit to the shared AI",
   assert.equal(new Set(kits.map(([, kit]) => kit.ultimate.mode)).size, 12);
 });
 
-test("campaign 1 preserves queued invaders and requires its late boss before victory", () => {
-  assert.deepEqual(CAMPAIGN1_WAVE_COUNTS, { 1: 36, 2: 48 });
-  assert.equal(CAMPAIGN1_MAX_ACTIVE_INVADERS, 18);
+test("campaign 1 deploys its boss with wave 2 and requires that boss before victory", () => {
+  assert.deepEqual(CAMPAIGN1_WAVE_COUNTS, { 1: 18, 2: 24 });
+  assert.equal(CAMPAIGN1_MAX_ACTIVE_INVADERS, 9);
+  assert.equal(CAMPAIGN1_SCOUT_EXIT_MS + CAMPAIGN1_VENT_DELAY_MS, 8200);
   assert.equal(shouldRemoveSpawnOrder(false, -9000, true), false);
   assert.equal(shouldRemoveSpawnOrder(false, -5000, false), true);
-  assert.equal(campaign1BossShouldEnter(2, true, 9), false);
-  assert.equal(campaign1BossShouldEnter(2, true, 8), true);
+  assert.equal(campaign1BossShouldEnter(2, true, 24), true);
+  assert.equal(campaign1BossShouldEnter(2, true, 9), true);
+  assert.equal(campaign1BossShouldEnter(2, true, 25), false);
   assert.equal(campaign1BossShouldEnter(1, true, 0), false);
   assert.equal(campaign1VictoryReady(2, false, 0, 0), false);
   assert.equal(campaign1VictoryReady(2, true, 0, 1), false);
   assert.equal(campaign1VictoryReady(2, true, 0, 0), true);
+});
+
+test("campaign 2 succeeds with any survivors and fails only when every scientist dies", () => {
+  assert.equal(CAMPAIGN2_SCIENTIST_START_DELAY_MS, 5000);
+  assert.deepEqual(campaign2EscortOutcome(3, 2, 2), { failed: false, won: true });
+  assert.deepEqual(campaign2EscortOutcome(3, 2, 1), { failed: false, won: true });
+  assert.deepEqual(campaign2EscortOutcome(3, 1, 1), { failed: false, won: true });
+  assert.deepEqual(campaign2EscortOutcome(3, 0, 0), { failed: true, won: false });
+});
+
+test("campaign companion stays close but commits to reachable local enemies", () => {
+  assert.equal(CAMPAIGN_COMPANION_LEASH_DISTANCE, 8);
+  assert.equal(CAMPAIGN_COMPANION_AGGRO_DISTANCE, 24);
+  assert.equal(CAMPAIGN_COMPANION_ASSIST_DISTANCE, 160);
+  assert.equal(CAMPAIGN_COMPANION_ASSIST_MEMORY_MS, 20000);
+  assert.equal(campaignCompanionMode(7, 3, true), "engage");
+  assert.equal(campaignCompanionMode(9, 3, true), "follow");
+  assert.equal(campaignCompanionMode(2, 25, true), "follow");
+  assert.equal(campaignCompanionMode(2, 7, false), "follow");
+  assert.equal(campaignCompanionMode(8, 12, true), "engage");
+  assert.equal(campaignCompanionMode(2, 13, true), "engage");
+  assert.equal(campaignCompanionMode(20, 20, true, true), "engage");
+  assert.equal(campaignCompanionMode(20, 159, true, true), "engage");
+  assert.equal(campaignCompanionMode(20, 161, true, true), "follow");
+  assert.equal(campaignCompanionMoveDuration(2), 260);
+  assert.equal(campaignCompanionMoveDuration(6), 148);
+  assert.equal(campaignCompanionMoveDuration(20), 120);
+  assert.equal(campaignCompanionMoveDuration(20, 0.5), 120 / 0.55);
+  assert.equal(campaignShouldEngageLocalObjective(0), true);
+  assert.equal(campaignShouldEngageLocalObjective(24), true);
+  assert.equal(campaignShouldEngageLocalObjective(25), false);
+  assert.equal(campaignShouldEngageLocalObjective(3, true), false);
+  assert.equal(campaignShouldEngageLocalObjective(Infinity), false);
+  const adjacentFormation = campaignCompanionGoalOffsets(1),
+    recoveryFormation = campaignCompanionGoalOffsets(2);
+  assert.equal(adjacentFormation.length, 8);
+  assert.equal(recoveryFormation.length, 24);
+  assert.ok(recoveryFormation.slice(0, 8).every(({ x, y }) => Math.max(Math.abs(x), Math.abs(y)) === 1));
+  assert.ok(recoveryFormation.slice(8).every(({ x, y }) => Math.max(Math.abs(x), Math.abs(y)) === 2));
+});
+
+test("campaign 4 companion recovers from occupied corridors before becoming permanently idle", () => {
+  assert.equal(CAMPAIGN_COMPANION_BLOCKED_RECOVERY_MS, 1800);
+  assert.equal(CAMPAIGN_COMPANION_DISCONNECTED_RECOVERY_MS, 2600);
+  assert.equal(CAMPAIGN_COMPANION_STALL_RECOVERY_MS, 2200);
+  assert.equal(CAMPAIGN_COMPANION_HARD_RECOVERY_MS, 10000);
+  assert.equal(CAMPAIGN_COMPANION_RECOVERY_DISTANCE, 5);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, false, 1799, 0, 8), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, false, 1800, 0, 8), true);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, true, 3000, 0, 8), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(false, false, 0, 2599, 8), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(false, false, 0, 2600, 8), true);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(false, false, 0, 5000, 4), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, true, 0, 0, 8, 2199, false), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, true, 0, 0, 8, 2200, false), true);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, true, 0, 0, 8, 5000, true), false);
+  assert.equal(campaignCompanionShouldEmergencyRejoin(true, true, 0, 0, 4, 5000, false), false);
+  assert.equal(campaignCompanionShouldHardRejoin(true, 9999, 8, false), false);
+  assert.equal(campaignCompanionShouldHardRejoin(true, 10000, 4, false), false);
+  assert.equal(campaignCompanionShouldHardRejoin(true, 10000, 8, true), false);
+  assert.equal(campaignCompanionShouldHardRejoin(false, 10000, 8, false), false);
+  assert.equal(campaignCompanionShouldHardRejoin(true, 10000, 8, false), true);
+});
+
+test("Yoo Seung-cheon radial drill breaks all eight neighboring cells", () => {
+  const basic = radialDrillOffsets(1), expanded = radialDrillOffsets(2);
+  assert.equal(basic.length, 8);
+  assert.equal(new Set(basic.map(({ x, y }) => `${x},${y}`)).size, 8);
+  assert.ok(basic.some(({ x, y }) => x === 1 && y === 1));
+  assert.ok(basic.some(({ x, y }) => x === -1 && y === -1));
+  assert.equal(expanded.length, 24);
+  assert.ok(expanded.every(({ x, y }) => Math.max(Math.abs(x), Math.abs(y)) <= 2));
+});
+
+test("campaign 2, 4, and 5 enemies use local sentry behavior", () => {
+  assert.equal(CAMPAIGN_ASSIST_RADIUS, 20);
+  assert.equal(CAMPAIGN_SENTRY_AGGRO_DISTANCE, 9);
+  assert.equal(isCampaignSentryChapter(1), false);
+  assert.equal(isCampaignSentryChapter(2), true);
+  assert.equal(isCampaignSentryChapter(4), true);
+  assert.equal(isCampaignSentryChapter(5), true);
+});
+
+test("grid navigation uses the real detour distance instead of distance through a wall", () => {
+  const blocked = new Set(["2,0", "2,1", "2,2", "2,3"]),
+    isOpen = (x, y) => x >= 0 && y >= 0 && x < 5 && y < 5 && !blocked.has(`${x},${y}`),
+    route = shortestRouteToAny({ x: 1, y: 2 }, [{ x: 3, y: 2 }], isOpen);
+  assert.ok(route);
+  assert.equal(Math.hypot(3 - 1, 2 - 2), 2);
+  assert.equal(route.distance, 6);
+  assert.deepEqual(route.step, { x: 0, y: 1 });
+});
+
+test("combat routing stops on a free attack cell instead of the occupied target cell", () => {
+  const target = { x: 3, y: 2 },
+    candidates = attackPositionCandidates(
+      target,
+      1.5,
+      (x, y) => x >= 0 && y >= 0 && x < 6 && y < 5 && (x !== target.x || y !== target.y),
+      () => true,
+    ),
+    route = shortestRouteToAny({ x: 1, y: 2 }, candidates, () => true);
+  assert.ok(route);
+  assert.equal(candidates.some((point) => point.x === target.x && point.y === target.y), false);
+  assert.deepEqual(route.goal, { x: 2, y: 2 });
+  assert.equal(route.distance, 1);
+});
+
+test("strategy guidance stitches every waypoint in order", () => {
+  const guide = stitchRoutePoints(
+    { x: 1, y: 1 },
+    [{ x: 3, y: 1 }, { x: 3, y: 3 }],
+    (x, y) => x >= 0 && y >= 0 && x < 5 && y < 5,
+  );
+  assert.equal(guide.complete, true);
+  assert.deepEqual(guide.cells[0], { x: 1, y: 1 });
+  assert.deepEqual(guide.cells.at(-1), { x: 3, y: 3 });
+  assert.equal(guide.cells.length, 5);
+});
+
+test("the last edited march route avoids the other route in either A/B order", () => {
+  const openCells = new Set([
+    "1,3", "2,3", "3,3", "7,3", "8,3", "9,3",
+    "3,2", "3,1", "4,1", "5,1", "6,1", "7,1", "7,2",
+    "3,4", "3,5", "4,5", "5,5", "6,5", "7,5", "7,4",
+  ]);
+  const isOpen = (x, y) => openCells.has(`${x},${y}`),
+    start = { x: 1, y: 3 },
+    goal = { x: 9, y: 3 },
+    routeA = diverseRouteToGoal(start, goal, isOpen),
+    routeB = diverseRouteToGoal(start, goal, isOpen, routeA.cells, {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+    }),
+    editedA = diverseRouteToGoal(start, goal, isOpen, routeB.cells, {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+    });
+
+  assert.ok(routeA);
+  assert.ok(routeB);
+  assert.ok(editedA);
+  assert.equal(routeB.pathMode, "flank");
+  assert.equal(editedA.pathMode, "flank");
+  assert.notDeepEqual(routeB.cells, routeA.cells);
+  assert.notDeepEqual(editedA.cells, routeB.cells);
+  assert.deepEqual(editedA.cells, routeA.cells);
+});
+
+test("a single unavoidable corridor remains usable and reports a shared bottleneck", () => {
+  const isOpen = (x, y) => y === 2 && x >= 1 && x <= 8,
+    start = { x: 1, y: 2 },
+    goal = { x: 8, y: 2 },
+    routeA = diverseRouteToGoal(start, goal, isOpen, [], {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+    }),
+    routeB = diverseRouteToGoal(start, goal, isOpen, routeA.cells, {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+    });
+
+  assert.ok(routeA);
+  assert.ok(routeB);
+  assert.equal(routeB.pathMode, "shared");
+  assert.deepEqual(routeB.cells, routeA.cells);
+});
+
+test("a newly edited route prefers the far opposite side over a nearby parallel lane", () => {
+  const openCells = new Set(["1,5", "2,5", "10,5", "11,5"]);
+  for (let x = 2; x <= 10; x++) {
+    openCells.add(`${x},4`);
+    openCells.add(`${x},2`);
+    openCells.add(`${x},8`);
+  }
+  for (const y of [3, 6, 7]) {
+    openCells.add(`2,${y}`);
+    openCells.add(`10,${y}`);
+  }
+  const start = { x: 1, y: 5 }, goal = { x: 11, y: 5 },
+    isOpen = (x, y) => openCells.has(`${x},${y}`),
+    existing = [start, { x: 2, y: 5 }, ...Array.from({ length: 9 }, (_, index) => ({ x: index + 2, y: 4 })), { x: 10, y: 5 }, goal],
+    route = diverseRouteToGoal(start, goal, isOpen, existing, {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+    });
+  assert.ok(route);
+  assert.equal(route.pathMode, "flank");
+  assert.ok(route.cells.some(({ y }) => y === 8), "route should enter from the opposite lower side");
+  assert.ok(!route.cells.some(({ y }) => y === 2), "nearby same-side lane must not win");
+  assert.ok(route.separationDistance >= 3);
+});
+
+test("campaign 3 arena healing is capped at two reduced uses", () => {
+  assert.equal(campaign3ArenaHeal(0, 350), 35);
+  assert.equal(campaign3ArenaHeal(1, 350), 35);
+  assert.equal(campaign3ArenaHeal(2, 350), 0);
+});
+
+test("campaign room stage helper still gates objective transitions", () => {
+  assert.equal(campaignStageIsActive(2, 1), false);
+  assert.equal(campaignStageIsActive(2, 2), true);
+  assert.equal(campaign5FirstGateReady(4, 2, 2), true);
+  assert.equal(campaign5FirstGateReady(4, 2, 1), false);
+  assert.equal(campaign5FirstGateReady(5, 2, 2), false);
 });
 
 test("campaign 1 stragglers regroup and eventually leave the wave tally", () => {
@@ -122,6 +482,9 @@ test("campaign 1 stragglers regroup and eventually leave the wave tally", () => 
   assert.equal(regroup.shouldRetreat, false);
   const retreat = campaign1AdvanceWatch(49, 50, CAMPAIGN1_RETREAT_AFTER_MS - 100, 150);
   assert.equal(retreat.shouldRetreat, true);
+  assert.equal(campaign1ShouldForceExit(2, 1000, 2000), true);
+  assert.equal(campaign1ShouldForceExit(1, 1000, 1000 + CAMPAIGN1_RETREAT_AFTER_MS), true);
+  assert.equal(campaign1ShouldForceExit(1, 1000, 1000 + CAMPAIGN1_RETREAT_AFTER_MS - 1), false);
 });
 
 test("campaign 1 guards by default but yields to an assigned march route", () => {
@@ -155,11 +518,14 @@ test("blocked attackers switch from routing to installation siege", () => {
   assert.equal(siegeResponse({ adjacentEnemyInstallation: false, pathBlockedByEnemyInstallation: false, reachableEnemyInstallation: false }), "continue");
 });
 
-test("only minions damage normal cores and exposed-core roles stay distinct", () => {
+test("heroes and minions can break shields while installations remain unable to damage cores", () => {
   assert.equal(canDamageCore({ role: "minion", isCampaign: false, campaignChapter: 0 }), true);
-  assert.equal(canDamageCore({ role: "hero", isCampaign: false, campaignChapter: 0 }), false);
+  assert.equal(canDamageCore({ role: "hero", isCampaign: false, campaignChapter: 0 }), true);
   assert.equal(canDamageCore({ role: "turret", isCampaign: false, campaignChapter: 0 }), false);
   assert.equal(canDamageCore({ role: "hero", isCampaign: true, campaignChapter: 4 }), true);
+  assert.equal(canDamageShield({ role: "hero" }), true);
+  assert.equal(canDamageShield({ role: "minion" }), true);
+  assert.equal(exposedCoreDamage(100, { role: "hero" }), 35);
   assert.equal(exposedCoreDamage(100, { role: "minion", minionRole: "breaker" }), 312.5);
   assert.equal(exposedCoreDamage(100, { role: "minion", minionRole: "escort" }), 125);
   assert.equal(exposedCoreDamage(100, { role: "minion", minionRole: "shooter" }), 100);
@@ -172,4 +538,181 @@ test("emergency breaching only breaks enemy player-filled earth after a delay", 
   assert.equal(canEmergencyBreach({ ...base, tile: { type: 5, filledBy: "red" } }), false);
   assert.equal(canEmergencyBreach({ ...base, tile: { type: 2 } }), false);
   assert.equal(canEmergencyBreach({ ...base, minionRole: "escort", tile: { type: 5, filledBy: "blue" } }), false);
+});
+
+test("online guests predict their own hero locally while the host remains authoritative for everyone else", () => {
+  assert.equal(opponentTeam("blue"), "red");
+  assert.equal(opponentTeam("red"), "blue");
+  assert.equal(shouldApplyAuthoritativeHeroPosition(false, "local-player", "local-player"), false);
+  assert.equal(shouldApplyAuthoritativeHeroPosition(false, "remote-player", "local-player"), true);
+  assert.equal(shouldApplyAuthoritativeHeroPosition(true, "local-player", "local-player"), true);
+});
+
+test("online friendly matches use WebSocket heartbeat, host snapshots, and reject stale room revisions", () => {
+  assert.equal(ONLINE_SOCKET_HEARTBEAT_MS, 8000);
+  assert.equal(ONLINE_SOCKET_RECONNECT_MAX_MS, 5000);
+  assert.equal(ONLINE_SNAPSHOT_INTERVAL_MS, 250);
+  assert.equal(ONLINE_REMOTE_INTERPOLATION_MS, 300);
+  const current = { code: "ABC123", revision: 8 }, stale = { code: "ABC123", revision: 7 }, fresh = { code: "ABC123", revision: 9 };
+  assert.equal(newestOnlineRoomView(current, stale), current);
+  assert.equal(newestOnlineRoomView(current, fresh), fresh);
+});
+
+test("team minion research reaches level five while waves only guarantee a minimum", () => {
+  assert.deepEqual(nextMinionResearch(1), { level: 2, cost: 90 });
+  assert.deepEqual(nextMinionResearch(4), { level: 5, cost: 300 });
+  assert.equal(nextMinionResearch(5), null);
+  assert.deepEqual([0, 7, 15, 23, 31].map(guaranteedMinionLevelForWave), [1, 2, 3, 4, 5]);
+  assert.deepEqual(teamMinionLevels(3, 1), { blue: 3, red: 1 });
+  assert.deepEqual([2, 3, 4, 5].map(minionResearchUnlockWave), [3, 9, 17, 25]);
+  assert.equal(minionResearchReady(3, 8), false);
+  assert.equal(minionResearchReady(3, 9), true);
+});
+
+test("all factions share tactical costs and cooldown but keep distinct support behavior", () => {
+  assert.equal(TACTICAL_SHARED_COOLDOWN_MS, 45000);
+  for (const faction of ["human", "bugborn", "ai"]) {
+    assert.equal(tacticalDefinition(faction, "defense").cost, 100);
+    assert.equal(tacticalDefinition(faction, "offense").cost, 120);
+    assert.equal(tacticalDefinition(faction, "area").cost, 150);
+    assert.equal(tacticalDefinition(faction, "recovery").cost, 130);
+    assert.equal(tacticalDefinition(faction, "reinforce").cost, 180);
+  }
+  assert.equal(TACTICAL_RECOVERY_FRACTION, 0.03);
+  assert.equal(ELITE_TACTICAL_EFFECT_SCALE, 0.7);
+  assert.equal(ELITE_RECOVERY_SCALE, 0.5);
+  assert.notEqual(tacticalDefinition("human", "area").name, tacticalDefinition("bugborn", "area").name);
+  assert.notEqual(tacticalDefinition("bugborn", "area").name, tacticalDefinition("ai", "area").name);
+});
+
+test("active tactical buffs expose readable faction light and role badges", () => {
+  for (const faction of ["human", "bugborn", "ai"]) {
+    const defense = tacticalBuffVisual(faction, "defense"), offense = tacticalBuffVisual(faction, "offense"), recovery = tacticalBuffVisual(faction, "recovery");
+    assert.match(defense.auraColor, /^#[0-9a-f]{6}$/i);
+    assert.match(offense.sparkColor, /^#[0-9a-f]{6}$/i);
+    assert.equal(defense.badge, "shield");
+    assert.equal(offense.badge, "surge");
+    assert.equal(recovery.badge, "plus");
+    assert.notDeepEqual(defense, offense);
+  }
+  assert.notEqual(tacticalBuffVisual("human", "defense").auraColor, tacticalBuffVisual("bugborn", "defense").auraColor);
+});
+
+test("skirmish economy slows spam while preserving fair computer combat stats", () => {
+  assert.equal(SKIRMISH_STARTING_CREDITS, 120);
+  assert.deepEqual([MINION_KILL_CREDITS, ELITE_KILL_CREDITS, HERO_KILL_CREDITS], [8, 30, 35]);
+  assert.equal(INSTALLATION_REWARD_RATE, 0.25);
+  assert.equal(installationKillCredits(40), 10);
+  assert.equal(installationKillCredits(200), 50);
+  assert.equal(COMPUTER_CREDIT_MULTIPLIER, 1.08);
+  assert.equal(creditedAmount(35, true), 38);
+});
+
+test("each faction owns one rare elite, one persistent support, and three attack choices", () => {
+  const expectedControl = { human: "shock", bugborn: "acid", ai: "tether" };
+  for (const faction of ["human", "bugborn", "ai"]) {
+    const elite = MINIONS.find((unit) => unit.faction === faction && unit.role === "elite"),
+      factionBuildings = BUILDABLES.filter((building) => building.faction === faction),
+      support = factionBuildings.find((building) => building.category === "support"),
+      attacks = factionBuildings.filter((building) => building.category === "multi" || building.category === "ranged"),
+      control = attacks.find((building) => building.control);
+    assert.ok(elite);
+    assert.ok(elite.stats.maxHp >= 200);
+    assert.ok(support?.supportAura);
+    assert.equal(supportAuraValue(support.supportAura, 1), support.supportAura.value);
+    assert.equal(supportAuraValue(support.supportAura, 2), support.supportAura.upgradedValue);
+    assert.equal(attacks.length, 3);
+    assert.equal(control?.control?.kind, expectedControl[faction]);
+  }
+  const aiAura = BUILDABLES.find((building) => building.id === "targetRelay")?.supportAura;
+  assert.equal(supportAuraAppliesToRole(aiAura, "breaker"), false);
+  assert.equal(supportAuraAppliesToRole(aiAura, "shooter"), true);
+});
+
+test("elite reservation replaces one regular slot and emergency support adds five regulars", () => {
+  const state = createEliteDeploymentState();
+  assert.equal(ELITE_UNLOCK_WAVE, 6);
+  assert.equal(ELITE_RESERVATION_COST, 150);
+  assert.equal(canReserveElite({ wave: 5, credits: 999, activeElites: 0, state }), false);
+  assert.equal(canReserveElite({ wave: 6, credits: 150, activeElites: 0, state }), true);
+  const formation = withReservedElite(["escort", "breaker", "breaker", "shooter"], true);
+  assert.equal(formation.length, 4);
+  assert.equal(formation.filter((role) => role === "elite").length, 1);
+  assert.deepEqual(reinforcementFormation(), ["escort", "breaker", "breaker", "shooter", "shooter"]);
+  assert.equal(REINFORCEMENT_MINION_CAP, 17);
+});
+
+test("uncommanded minions share a wave cohort and hold targets long enough to fight", () => {
+  assert.equal(minionExplorationCohort(6, 99), 6);
+  assert.equal(minionExplorationCohort(undefined, 8), 2);
+  assert.equal(minionExplorationCohort(undefined, 11), 2);
+  assert.equal(MINION_ENGAGEMENT_RADIUS, 8);
+  assert.equal(MINION_PURSUIT_DISTANCE, 12);
+  assert.equal(MINION_TARGET_MEMORY_MS, 4200);
+});
+
+test("minion squads spread across combat slots instead of queueing behind one ally", () => {
+  const target = { x: 10, y: 10 },
+    baseCandidates = [
+      { x: 9, y: 10 },
+      { x: 11, y: 10 },
+      { x: 10, y: 9 },
+      { x: 10, y: 11 },
+      { x: 9, y: 9 },
+      { x: 11, y: 9 },
+      { x: 9, y: 11 },
+      { x: 11, y: 11 },
+    ].map((point) => ({
+      ...point,
+      routeDistance: 4,
+      targetDistance: Math.hypot(point.x - target.x, point.y - target.y),
+      crowd: 0,
+      occupied: false,
+      reserved: false,
+    })),
+    reserved = new Set(),
+    selected = [];
+  for (let attackerId = 1; attackerId <= 6; attackerId++) {
+    const slot = chooseCombatApproachSlot(
+      attackerId,
+      attackerId % 3 === 0 ? "escort" : "breaker",
+      1.5,
+      target,
+      baseCandidates.map((candidate) => ({
+        ...candidate,
+        reserved: reserved.has(`${candidate.x},${candidate.y}`),
+      })),
+    );
+    assert.ok(slot);
+    const key = `${slot.x},${slot.y}`;
+    assert.equal(reserved.has(key), false, `attacker ${attackerId} reused ${key}`);
+    reserved.add(key);
+    selected.push(key);
+  }
+  assert.equal(new Set(selected).size, 6);
+
+  const shooterSlot = chooseCombatApproachSlot(3, "shooter", 5, target, [
+    { x: 9, y: 10, routeDistance: 4, targetDistance: 1, crowd: 0, occupied: false, reserved: false },
+    { x: 14, y: 10, routeDistance: 4, targetDistance: 4, crowd: 0, occupied: false, reserved: false },
+  ]);
+  assert.equal(shooterSlot?.targetDistance, 4, "shooters should preserve an outer firing ring");
+  assert.equal(MINION_COMBAT_SLOT_MEMORY_MS, 2200);
+  assert.equal(MINION_FLANK_REPLAN_MS, 420);
+  assert.equal(minionCombatDetourAllowance("breaker", 419), 0);
+  assert.equal(minionCombatDetourAllowance("breaker", 420), 1);
+});
+
+test("minion progression reaches level five without changing both teams' parity", () => {
+  assert.equal(MINION_LEVELS.length, 5);
+  assert.deepEqual(
+    [1, 7, 15, 23, 31].map(minionLevelForWave),
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(
+    [2, 4, 6, 14, 22, 30].map(minionLevelForWave),
+    [1, 1, 1, 2, 3, 4],
+  );
+  assert.equal(MINION_LEVELS[4].hp, 1.75);
+  assert.equal(MINION_LEVELS[4].damage, 1.55);
+  assert.equal(MINION_LEVELS[4].speed, 1.12);
 });

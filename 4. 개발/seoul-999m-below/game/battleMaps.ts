@@ -129,6 +129,34 @@ export const resolveBattleSpawns = (definition: BattleMapDefinition, seed: numbe
     : { blue: { ...pair.blue }, red: { ...pair.red } };
 };
 
+export const resolveLocalBattleSpawns = (
+  definition: BattleMapDefinition,
+  seed: number,
+  canonicalLocalTeam: "blue" | "red",
+) => {
+  const canonical = resolveBattleSpawns(definition, seed);
+  return canonicalLocalTeam === "blue"
+    ? { ally: canonical.blue, enemy: canonical.red, canonical }
+    : { ally: canonical.red, enemy: canonical.blue, canonical };
+};
+
+export const battleExplorationSectors = (
+  definition: BattleMapDefinition,
+  ownCore: { x: number; y: number },
+) => {
+  const candidates = [
+      ...definition.spawnPairs.flatMap((pair) => [pair.blue, pair.red]),
+      { x: 17, y: 18 },
+      { x: 38, y: 18 },
+      { x: 28, y: 18 },
+    ],
+    unique = new Map<string, { x: number; y: number }>();
+  for (const point of candidates)
+    if (Math.hypot(point.x - ownCore.x, point.y - ownCore.y) > 8)
+      unique.set(`${point.x},${point.y}`, { ...point });
+  return [...unique.values()];
+};
+
 export const battleMap = (id: BattleMapId) => {
   const definition = BATTLE_MAPS.find((map) => map.id === id);
   if (!definition) throw new Error(`Unknown battle map: ${id}`);

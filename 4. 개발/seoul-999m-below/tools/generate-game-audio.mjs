@@ -63,86 +63,157 @@ const normalize = (samples, peak = 0.82) => {
   for (let index = 0; index < samples.length; index++) samples[index] = Math.tanh(samples[index] * scale * 1.15) / Math.tanh(1.15) * peak;
 };
 
-const addStereoTone = (left, right, start, duration, frequency, gain, wave = "sine", pan = 0, slide = 1) => {
-  const angle = (pan + 1) * Math.PI / 4;
-  addTone(left, start, duration, frequency, gain * Math.cos(angle), wave, slide);
-  addTone(right, start, duration, frequency, gain * Math.sin(angle), wave, slide);
-};
-const addStereoNoise = (left, right, start, duration, gain, seed, pan = 0, decay = 4) => {
-  const angle = (pan + 1) * Math.PI / 4;
-  addNoise(left, start, duration, gain * Math.cos(angle), seed, decay);
-  addNoise(right, start, duration, gain * Math.sin(angle), seed + 17, decay);
-};
 const noteFrequency = (root, semitones) => root * 2 ** (semitones / 12);
+
+const stereoGain = (pan) => {
+  const angle = (Math.max(-1, Math.min(1, pan)) + 1) * Math.PI / 4;
+  return [Math.cos(angle), Math.sin(angle)];
+};
+
+const addWarmPad = (left, right, start, duration, frequency, gain, pan = 0) => {
+  const from = Math.max(0, Math.floor(start * sampleRate)), count = Math.floor(duration * sampleRate),
+    [gainL, gainR] = stereoGain(pan);
+  let phase = 0, phaseDetuned = 0;
+  for (let n = 0; n < count && from + n < left.length; n++) {
+    const p = n / count,
+      envelope = Math.min(1, p * 3.2) * Math.min(1, (1 - p) * 3.8),
+      drift = 1 + Math.sin((start + n / sampleRate) * .37) * .0018;
+    phase += Math.PI * 2 * frequency * drift / sampleRate;
+    phaseDetuned += Math.PI * 2 * frequency * 1.004 / sampleRate;
+    const body = Math.sin(phase) * .72 + Math.sin(phaseDetuned) * .2 + Math.sin(phase * .5) * .08,
+      sample = body * gain * envelope;
+    left[from + n] += sample * gainL;
+    right[from + n] += sample * gainR;
+  }
+};
+
+const addFeltPiano = (left, right, start, duration, frequency, gain, pan = 0) => {
+  const from = Math.max(0, Math.floor(start * sampleRate)), count = Math.floor(duration * sampleRate),
+    [gainL, gainR] = stereoGain(pan);
+  let phase = 0;
+  for (let n = 0; n < count && from + n < left.length; n++) {
+    const p = n / count,
+      attack = 1 - Math.exp(-p * 80),
+      envelope = attack * Math.exp(-p * 5.4) * Math.min(1, (1 - p) * 18);
+    phase += Math.PI * 2 * frequency / sampleRate;
+    const body = Math.sin(phase) * .74 + Math.sin(phase * 2.01 + .2) * .2 + Math.sin(phase * 3.98) * .06,
+      sample = body * gain * envelope;
+    left[from + n] += sample * gainL;
+    right[from + n] += sample * gainR;
+  }
+};
+
+const addPluckedString = (left, right, start, duration, frequency, gain, pan, seed) => {
+  const from = Math.max(0, Math.floor(start * sampleRate)), count = Math.floor(duration * sampleRate),
+    delay = Math.max(8, Math.round(sampleRate / frequency)), buffer = new Float32Array(delay),
+    random = randomFor(seed), [gainL, gainR] = stereoGain(pan);
+  for (let index = 0; index < delay; index++) buffer[index] = random() * 2 - 1;
+  let cursor = 0, body = 0;
+  for (let n = 0; n < count && from + n < left.length; n++) {
+    const value = buffer[cursor], next = buffer[(cursor + 1) % delay];
+    buffer[cursor] = (value + next) * .4987;
+    cursor = (cursor + 1) % delay;
+    body += (value - body) * .32;
+    const release = Math.min(1, (count - n) / Math.max(1, sampleRate * .08)), sample = body * gain * release;
+    left[from + n] += sample * gainL;
+    right[from + n] += sample * gainR;
+  }
+};
+
+const addFrameDrum = (left, right, start, gain, seed, pan = 0) => {
+  const duration = .34, from = Math.floor(start * sampleRate), count = Math.floor(duration * sampleRate),
+    random = randomFor(seed), [gainL, gainR] = stereoGain(pan);
+  let phase = 0, lowNoise = 0;
+  for (let n = 0; n < count && from + n < left.length; n++) {
+    const p = n / count, hz = 76 - p * 34;
+    phase += Math.PI * 2 * hz / sampleRate;
+    lowNoise += ((random() * 2 - 1) - lowNoise) * .08;
+    const envelope = (1 - Math.exp(-p * 70)) * Math.exp(-p * 6.8),
+      sample = (Math.sin(phase) * .86 + lowNoise * .14) * gain * envelope;
+    left[from + n] += sample * gainL;
+    right[from + n] += sample * gainR;
+  }
+};
+
+const addBrush = (left, right, start, duration, gain, seed, pan = 0) => {
+  const from = Math.floor(start * sampleRate), count = Math.floor(duration * sampleRate), random = randomFor(seed),
+    [gainL, gainR] = stereoGain(pan);
+  let low = 0;
+  for (let n = 0; n < count && from + n < left.length; n++) {
+    const p = n / count, white = random() * 2 - 1;
+    low += (white - low) * .055;
+    const envelope = Math.sin(Math.PI * p) ** 1.6,
+      sample = (white * .18 + low * .82) * gain * envelope;
+    left[from + n] += sample * gainL;
+    right[from + n] += sample * gainR;
+  }
+};
+
+const addLoopRoom = (left, right) => {
+  const dryL = left.slice(), dryR = right.slice(), length = left.length;
+  for (const [seconds, gain, cross] of [[.137, .11, .15], [.223, .075, .22], [.349, .052, .28]]) {
+    const delay = Math.round(seconds * sampleRate);
+    for (let index = 0; index < length; index++) {
+      const source = (index - delay + length) % length;
+      left[index] += (dryL[source] * (1 - cross) + dryR[source] * cross) * gain;
+      right[index] += (dryR[source] * (1 - cross) + dryL[source] * cross) * gain;
+    }
+  }
+};
 
 const musicRecipes = {
   "shelter-network": {
-    root: 55, chords: [0, -5, -2, -7], wave: "triangle", pad: "sine", drive: .65,
-    motifA: [0, null, 3, 5, 7, null, 5, 3, 0, null, 3, 7, 10, 7, 5, null],
-    motifB: [7, null, 10, 12, 15, 12, 10, null, 7, 5, 3, 5, 7, null, 3, null],
+    root: 55, chords: [0, -5, 3, -2], rhythm: 0, texture: .48, lead: "piano",
+    motif: [12, null, 15, null, 19, null, 17, null, 12, null, 10, null, 7, null, null, null],
   },
   "rust-rail-assault": {
-    root: 55, chords: [0, -2, -5, -7], wave: "saw", pad: "triangle", drive: 1,
-    motifA: [0, 0, 7, null, 5, 3, 0, null, 0, 3, 5, 7, 10, 7, 5, 3],
-    motifB: [12, 10, 7, 5, 7, null, 10, 12, 15, 12, 10, 7, 5, 7, 3, null],
+    root: 55, chords: [0, -2, -5, -7], rhythm: .72, texture: .74, lead: "pluck",
+    motif: [12, null, 19, 17, null, 15, 12, null, 10, 12, null, 7, 10, null, 5, null],
   },
   "flooded-pressure": {
-    root: 49, chords: [0, -7, -5, -2], wave: "sine", pad: "sine", drive: .72,
-    motifA: [0, null, null, 7, 10, null, 7, null, 5, null, 3, null, 0, null, null, null],
-    motifB: [12, null, 10, null, 7, 10, 12, null, 15, null, 12, 10, 7, null, 5, null],
+    root: 49, chords: [0, -7, -5, -2], rhythm: .42, texture: .62, lead: "piano",
+    motif: [12, null, null, 19, null, 17, null, null, 15, null, 12, null, 10, null, null, null],
   },
   "root-signal": {
-    root: 51.91, chords: [0, 1, -5, -1], wave: "saw", pad: "triangle", drive: .82,
-    motifA: [0, 1, 6, null, 5, 1, 8, null, 6, 5, 1, null, 0, 6, 8, null],
-    motifB: [12, 13, 18, 17, 13, null, 8, 11, 12, 8, 6, 5, 1, null, 6, null],
+    root: 51.91, chords: [0, 1, -5, -1], rhythm: .5, texture: .7, lead: "pluck",
+    motif: [12, null, 13, 18, null, 17, 13, null, 12, null, 8, 11, null, 6, null, null],
   },
   "redline-siege": {
-    root: 58.27, chords: [0, -2, -5, 3], wave: "saw", pad: "square", drive: 1.12,
-    motifA: [0, 0, 3, 5, 7, 7, 10, 7, 12, 10, 7, 5, 3, 5, 7, null],
-    motifB: [12, 12, 15, 17, 19, 17, 15, 12, 10, 12, 15, 10, 7, 10, 12, null],
+    root: 58.27, chords: [0, -2, -5, 3], rhythm: .84, texture: .78, lead: "pluck",
+    motif: [12, null, 15, 19, 17, null, 15, 12, 10, null, 12, 15, null, 10, 7, null],
   },
 };
 
 await mkdir(path.join(publicRoot, "bgm"), { recursive: true });
 for (const [id, track] of Object.entries(MUSIC_TRACKS)) {
-  const bars = 16, beat = 60 / track.bpm, duration = bars * beat * 4;
-  const left = new Float32Array(Math.floor(sampleRate * duration)), right = new Float32Array(left.length);
-  const recipe = musicRecipes[id], rng = randomFor(hash(id));
+  const bars = 12, beat = 60 / track.bpm, duration = bars * beat * 4;
+  const left = new Float32Array(Math.floor(sampleRate * duration)), right = new Float32Array(left.length),
+    recipe = musicRecipes[id], seed = hash(`organic-${id}`);
   for (let bar = 0; bar < bars; bar++) {
-    const barAt = bar * beat * 4, chord = recipe.chords[bar % recipe.chords.length];
-    const section = bar < 2 ? "intro" : bar < 6 ? "a" : bar < 10 ? "b" : bar < 12 ? "break" : "climax";
-    const energy = section === "intro" ? .48 : section === "break" ? .42 : section === "climax" ? 1.18 : section === "b" ? .95 : .78;
-    for (const [interval, pan] of [[0, -.35], [3, .25], [7, .55]])
-      addStereoTone(left, right, barAt, beat * 4, noteFrequency(recipe.root, chord + interval + 12), .044 * energy, recipe.pad, pan);
-    for (const bassBeat of [0, 2]) {
-      const at = barAt + bassBeat * beat;
-      addStereoTone(left, right, at, beat * .72, noteFrequency(recipe.root, chord), .16 * energy, "triangle", -.08, .84);
+    const barAt = bar * beat * 4, chord = recipe.chords[bar % recipe.chords.length],
+      energy = bar < 2 ? .68 : bar >= 8 ? .92 : .8;
+    for (const [interval, pan] of [[0, -.32], [3, .18], [7, .48]])
+      addWarmPad(left, right, barAt, beat * 4.12, noteFrequency(recipe.root, chord + interval + 12), .035 * recipe.texture * energy, pan);
+    addPluckedString(left, right, barAt, beat * 2.4, noteFrequency(recipe.root, chord), .095 * energy, -.12, seed + bar * 37);
+    if (id !== "shelter-network")
+      addPluckedString(left, right, barAt + beat * 2, beat * 1.7, noteFrequency(recipe.root, chord + 7), .052 * energy, .2, seed + bar * 41);
+    for (let step = 0; step < recipe.motif.length; step++) {
+      const note = recipe.motif[(step + (bar % 4) * 2) % recipe.motif.length];
+      if (note === null || (bar < 1 && step % 4 !== 0)) continue;
+      const at = barAt + step * beat / 4, hz = noteFrequency(recipe.root, chord + note + 12), pan = step % 2 ? .28 : -.28;
+      if (recipe.lead === "piano") addFeltPiano(left, right, at, beat * 1.55, hz, .062 * energy, pan);
+      else addPluckedString(left, right, at, beat * 1.2, hz, .052 * energy, pan, seed + bar * 211 + step * 13);
     }
-    const motif = section === "b" || section === "climax" ? recipe.motifB : recipe.motifA;
-    if (section !== "intro" || bar === 1) for (let step = 0; step < 16; step++) {
-      const note = motif[step];
-      if (note === null) continue;
-      const at = barAt + step * beat / 4, octaveLift = section === "climax" && step % 4 === 0 ? 12 : 0;
-      const hz = noteFrequency(recipe.root, chord + note + 24 + octaveLift);
-      addStereoTone(left, right, at, beat * (step % 4 === 0 ? .68 : .34), hz, .085 * energy, recipe.wave, step % 2 ? .32 : -.32, .985);
-      addStereoTone(left, right, at + .012, beat * .24, hz * 2, .018 * energy, "sine", step % 2 ? .55 : -.55);
+    if (recipe.rhythm > 0 && bar > 0) for (let quarter = 0; quarter < 4; quarter++) {
+      const at = barAt + quarter * beat;
+      if (quarter === 0 || quarter === 2)
+        addFrameDrum(left, right, at, .105 * recipe.rhythm * energy, seed + bar * 71 + quarter, quarter === 2 ? .08 : -.05);
+      else addBrush(left, right, at, beat * .72, .028 * recipe.rhythm * energy, seed + bar * 97 + quarter, quarter === 1 ? -.35 : .35);
     }
-    if (section !== "break") for (let eighth = 0; eighth < 8; eighth++) {
-      const at = barAt + eighth * beat / 2;
-      if (eighth === 0 || eighth === 4) {
-        addStereoTone(left, right, at, .18, 72, .19 * recipe.drive * energy, "sine", 0, .38);
-        addStereoNoise(left, right, at, .08, .052 * recipe.drive, hash(id) + bar * 31 + eighth, 0, 12);
-      }
-      if (eighth === 2 || eighth === 6) addStereoNoise(left, right, at, .16, .075 * recipe.drive * energy, hash(id) + bar * 43 + eighth, .12, 8);
-      addStereoNoise(left, right, at, .045, .018 * recipe.drive * energy, hash(id) + bar * 71 + eighth, eighth % 2 ? .65 : -.65, 16);
-    }
-    if (section === "climax") for (let quarter = 0; quarter < 4; quarter++) {
-      const arp = [0, 7, 3, 10][quarter];
-      addStereoTone(left, right, barAt + quarter * beat, beat * .42, noteFrequency(recipe.root, chord + arp + 24), .034, "triangle", quarter % 2 ? .72 : -.72);
-    }
-    if ((bar === 5 || bar === 11) && id !== "shelter-network") addStereoNoise(left, right, barAt + beat * 3.4, beat * .55, .065, hash(id) + bar, rng() > .5 ? .5 : -.5, 2);
+    addBrush(left, right, barAt, beat * 4, .006 * recipe.texture, seed + bar * 127, bar % 2 ? .7 : -.7);
   }
-  normalize(left, .76); normalize(right, .76);
+  addLoopRoom(left, right);
+  normalize(left, .68); normalize(right, .68);
   await writeFile(path.join(publicRoot, "bgm", path.basename(new URL(track.file, "http://local").pathname)), wavStereo(left, right));
 }
 

@@ -31,6 +31,7 @@ export type MatchConfig = {
   teamSize: TeamSize;
   mapId: BattleMapId;
   seed: number;
+  canonicalLocalTeam: "blue" | "red";
   teams: [TeamConfig, TeamConfig];
 };
 
@@ -98,6 +99,7 @@ export const createComputerMatch = (input: {
     teamSize: input.teamSize,
     mapId: input.mapId,
     seed,
+    canonicalLocalTeam: "blue",
     teams: [
       {
         faction: player.faction,
@@ -162,6 +164,7 @@ export const createOnlineMatch = (input: {
     teamSize: input.teamSize,
     mapId: input.mapId,
     seed: input.seed,
+    canonicalLocalTeam: local.team,
     teams: [
       { faction: own[0].faction, slots: toSlots(own, "blue") },
       { faction: enemy[0].faction, slots: toSlots(enemy, "red") },
