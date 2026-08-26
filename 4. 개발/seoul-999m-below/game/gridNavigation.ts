@@ -28,6 +28,7 @@ export const shortestRouteToAny = (
   goals: readonly GridPoint[],
   isOpen: (x: number, y: number) => boolean,
   maxNodes = 2000,
+  directions: readonly GridPoint[] = CARDINAL_DIRECTIONS,
 ): GridRoute | null => {
   const validGoals = new Map(
     goals
@@ -44,7 +45,7 @@ export const shortestRouteToAny = (
   for (let head = 0; reachedKey === null && head < queue.length && head < maxNodes; head++) {
     const point = queue[head],
       pointKey = gridPointKey(point);
-    for (const direction of CARDINAL_DIRECTIONS) {
+    for (const direction of directions) {
       const next = { x: point.x + direction.x, y: point.y + direction.y },
         nextKey = gridPointKey(next);
       if (parent.has(nextKey) || !isOpen(next.x, next.y)) continue;
@@ -74,6 +75,58 @@ export const shortestRouteToAny = (
     step: cells.length > 1
       ? { x: cells[1].x - start.x, y: cells[1].y - start.y }
       : null,
+  };
+};
+
+export const advanceRouteCursor = (
+  position: GridPoint,
+  cells: readonly GridPoint[],
+  cursor = 0,
+  arrivalDistance = 1,
+) => {
+  if (!cells.length)
+    return { index: 0, goal: null as GridPoint | null, atEnd: true };
+  let index = Math.max(0, Math.min(cursor, cells.length - 1));
+  // A unit may sidestep around congestion and land beside a later route cell.
+  // Recover forward only so it never walks back to an obsolete waypoint.
+  const lookaheadEnd = Math.min(cells.length - 1, index + 10);
+  for (let candidate = lookaheadEnd; candidate > index; candidate--)
+    if (
+      Math.abs(cells[candidate].x - position.x) +
+        Math.abs(cells[candidate].y - position.y) <= arrivalDistance
+    ) {
+      index = candidate;
+      break;
+    }
+  while (
+    index < cells.length - 1 &&
+    Math.abs(cells[index].x - position.x) + Math.abs(cells[index].y - position.y) <= arrivalDistance
+  ) index++;
+  const goal = cells[index],
+    atEnd = index === cells.length - 1 &&
+      Math.abs(goal.x - position.x) + Math.abs(goal.y - position.y) <= arrivalDistance;
+  return { index, goal: { ...goal }, atEnd };
+};
+
+export const forwardRouteRejoin = (
+  position: GridPoint,
+  cells: readonly GridPoint[],
+  cursor: number,
+  isOpen: (x: number, y: number) => boolean,
+) => {
+  if (!cells.length)
+    return { index: 0, plan: null as GridRoute | null };
+  const progress = advanceRouteCursor(position, cells, cursor),
+    firstForwardIndex = Math.max(0, Math.min(progress.index, cells.length - 1)),
+    forwardCells = cells.slice(firstForwardIndex),
+    plan = shortestRouteToAny(position, forwardCells, isOpen);
+  if (!plan) return { index: firstForwardIndex, plan: null as GridRoute | null };
+  const relativeIndex = forwardCells.findIndex(
+    (cell) => cell.x === plan.goal.x && cell.y === plan.goal.y,
+  );
+  return {
+    index: relativeIndex < 0 ? firstForwardIndex : firstForwardIndex + relativeIndex,
+    plan,
   };
 };
 
@@ -218,6 +271,7 @@ export const diverseRouteToGoal = (
     maxDetourRatio?: number;
     detourSlack?: number;
     maxNodes?: number;
+    preferredVerticalDirection?: -1 | 1;
   } = {},
 ): DiverseGridRoute | null => {
   const exactPenalty = options.exactPenalty ?? 24,
@@ -230,7 +284,13 @@ export const diverseRouteToGoal = (
     maxDetourRatio = options.maxDetourRatio ?? 2.35,
     detourSlack = options.detourSlack ?? 8,
     maxNodes = options.maxNodes ?? 4000,
-    baseline = shortestRouteToAny(start, [goal], isOpen, maxNodes);
+    preferredVerticalDirection = options.preferredVerticalDirection,
+    preferredDirections: readonly GridPoint[] = preferredVerticalDirection === 1
+      ? [{ x: 0, y: 1 }, { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: -1 }]
+      : preferredVerticalDirection === -1
+        ? [{ x: 0, y: -1 }, { x: 1, y: 0 }, { x: -1, y: 0 }, { x: 0, y: 1 }]
+        : CARDINAL_DIRECTIONS,
+    baseline = shortestRouteToAny(start, [goal], isOpen, maxNodes, preferredDirections);
   if (!baseline) return null;
 
   const avoided = new Set(avoidCells.map(gridPointKey));
@@ -259,17 +319,45 @@ export const diverseRouteToGoal = (
         if (Math.abs(offsetX) + Math.abs(offsetY) > hardAvoidRadius) continue;
         hardBlocked.add(gridPointKey({ x: cell.x + offsetX, y: cell.y + offsetY }));
       }
-  const hardFlank = shortestRouteToAny(
-    start,
-    [goal],
-    (x, y) => {
+  const axisX = goal.x - start.x,
+    axisY = goal.y - start.y,
+    hardDirections = preferredDirections,
+    hardRouteOpen = (x: number, y: number, enforcePreferredSide: boolean) => {
       const sharedEndpoint =
         Math.abs(x - start.x) + Math.abs(y - start.y) <= sharedStartRadius ||
         Math.abs(x - goal.x) + Math.abs(y - goal.y) <= sharedGoalRadius;
-      return isOpen(x, y) && (sharedEndpoint || !hardBlocked.has(gridPointKey({ x, y })));
+      if (!isOpen(x, y) || (!sharedEndpoint && hardBlocked.has(gridPointKey({ x, y }))))
+        return false;
+      if (
+        !enforcePreferredSide ||
+        !preferredVerticalDirection ||
+        Math.abs(axisX) < Math.abs(axisY) ||
+        sharedEndpoint
+      ) return true;
+      const progress = axisX === 0 ? 0 : (x - start.x) / axisX,
+        axisLineY = start.y + axisY * progress,
+        verticalSide = Math.sign(y - axisLineY);
+      return verticalSide === 0 || verticalSide === preferredVerticalDirection;
     },
+    preferredHardFlank = preferredVerticalDirection
+      ? shortestRouteToAny(
+          start,
+          [goal],
+          (x, y) => hardRouteOpen(x, y, true),
+          maxNodes,
+          hardDirections,
+        )
+      : null,
+    unrestrictedHardFlank = shortestRouteToAny(
+    start,
+    [goal],
+    (x, y) => hardRouteOpen(x, y, false),
     maxNodes,
-  );
+    hardDirections,
+  ),
+    preferredWithinDetour = preferredHardFlank &&
+      preferredHardFlank.distance <= baseline.distance * maxDetourRatio + detourSlack,
+    hardFlank = preferredWithinDetour ? preferredHardFlank : unrestrictedHardFlank;
   if (
     hardFlank &&
     hardFlank.distance <= baseline.distance * maxDetourRatio + detourSlack
@@ -325,9 +413,7 @@ export const diverseRouteToGoal = (
       goal,
       sharedStartRadius,
       sharedGoalRadius,
-    ),
-    axisX = goal.x - start.x,
-    axisY = goal.y - start.y;
+    );
 
   const startKey = gridPointKey(start),
     goalKey = gridPointKey(goal),
@@ -379,7 +465,14 @@ export const diverseRouteToGoal = (
             : nextSide === 0
               ? oppositeSidePenalty * 0.4
               : 0,
-        penalty = sharedEndpoint ? 0 : proximityPenalty + sidePenalty,
+        progress = axisX === 0 ? 0 : (next.x - start.x) / axisX,
+        axisLineY = start.y + axisY * progress,
+        verticalSide = Math.sign(next.y - axisLineY),
+        verticalPenalty = preferredVerticalDirection && Math.abs(axisX) >= Math.abs(axisY) &&
+          verticalSide !== 0 && verticalSide !== preferredVerticalDirection
+          ? oppositeSidePenalty * 1.5
+          : 0,
+        penalty = sharedEndpoint ? 0 : proximityPenalty + sidePenalty + verticalPenalty,
         nextCost = current.cost + 1 + penalty,
         nextDistance = current.distance + 1,
         oldCost = costs.get(nextKey),

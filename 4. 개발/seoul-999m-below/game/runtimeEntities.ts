@@ -96,12 +96,17 @@ export type Unit = {
   routeWaitMs?: number;
   routeRetreating?: boolean;
   routeResumeIndex?: number;
+  routePreviousX?: number;
+  routePreviousY?: number;
+  routeReverseLockUntil?: number;
   formationSide?: -1 | 0 | 1;
   aiCooldowns?: [number, number, number, number];
   aiComboLockUntil?: number;
   aiPreviousAction?: string;
   aiTargetId?: number;
   aiTargetUntil?: number;
+  aiAvoidTargetId?: number;
+  aiAvoidTargetUntil?: number;
   aiCohort?: number;
   aiApproachTargetId?: number;
   aiApproachX?: number;

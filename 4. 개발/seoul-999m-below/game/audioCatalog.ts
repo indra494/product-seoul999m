@@ -70,6 +70,9 @@ export const MUSIC_TRACKS: Record<
 };
 
 export const MUSIC_BY_MAP: Record<BattleMapId, MusicId> = {
+  "secret-crossroads": "rust-rail-assault",
+  "secret-reservoir": "flooded-pressure",
+  "secret-cache": "root-signal",
   "central-exchange": "rust-rail-assault",
   "flooded-pump": "flooded-pressure",
   "root-lab": "root-signal",

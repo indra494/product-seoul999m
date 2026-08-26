@@ -151,6 +151,7 @@ export type OnlineBattleCommand = {
   drillCooldownMultiplier?: number;
   slot?: 1 | 2 | 4;
   route?: "A" | "B";
+  points?: Array<{ x: number; y: number }>;
   allocation?: OnlineRouteAllocation;
   kind?: string;
   tacticalRole?: TacticalRole;

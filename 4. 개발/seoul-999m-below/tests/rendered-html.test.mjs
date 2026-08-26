@@ -106,9 +106,28 @@ test("fullscreen escape, pressure mine, illustrated roster, and help remain expl
     "drawGroundMines",
     "heroPortraitStyle",
     'menuPanel === "help"',
+    'useState<"quick" | "detail">("quick")',
+    'role="tablist"',
+    'role="tab"',
+    'role="tabpanel"',
+    'aria-selected={helpTab === "quick"}',
+    "처음 한 판은 이것만",
+    "이 네 가지만 따라 하세요",
+    "처음에는 이 조작만 쓰면 됩니다",
+    "처음에는 A/B를 몰라도 됩니다",
+    "상세 교본 보기",
+    "게임 플레이 방법 · 생존본부 현장 교본",
+    "처음 플레이는 이 순서만 따라 하세요",
+    "30초 준비 + 4분 침공",
+    "4분 종료",
     'className="help-card tactical"',
     "전술지원과 진군대 연구",
-    "다섯 역할은 팀 공용",
+    "다섯 전술은 팀 공용",
+    "영웅·현재 진군대를 8초간 매초 3% 회복",
+    "컴퓨터 대전은 Q/R에 고른 아이템",
+    "거점 안전 회복",
+    "Ctrl+Z",
+    "Ctrl+J",
     "정예병",
     "상시 지원 시설",
     "지역 제어 시설",
@@ -116,7 +135,7 @@ test("fullscreen escape, pressure mine, illustrated roster, and help remain expl
     '["4", "drill"',
     '["Shift", "survival"',
   ]);
-  hasAll(css, [".title-screen.help-open", ".help-key-grid", ".help-buff-preview", ".help-tactical-roles", "@keyframes help-buff-pulse", ".online-slot-portrait", ".hero-detail-portrait", ".roster-action-icons"]);
+  hasAll(css, [".title-screen.help-open", ".help-tabs", ".help-tabs button.active", ".help-brief-hero", ".help-brief-steps", ".help-brief-controls", ".help-quickstart", ".help-goal-flow", ".help-key-grid", ".help-shortcut-groups", ".help-buff-preview", ".help-tactical-roles", "@keyframes help-buff-pulse", ".online-slot-portrait", ".hero-detail-portrait", ".roster-action-icons"]);
   assert.ok(!app.includes("벽 매설 폭탄"));
   assert.ok(!app.includes("3 · 필살"));
 });
@@ -204,7 +223,7 @@ test("campaign contains five distinct missions and their failure or victory rule
 
 test("combat controls include movement, attacks, four skills, build, pause, minimap, and two routes", async () => {
   const app = await source("app/Seoul999mBelow.tsx");
-  hasAll(app, ["Escape", "Digit1", "Digit2", "Digit3", "Digit4", "KeyB", "pointerdown", "basicAttackAtPointer", "drawMinimap", "RouteId", "setRouteTarget", "돌격", "경계", "점령"]);
+  hasAll(app, ["Escape", "Digit1", "Digit2", "Digit3", "Digit4", "KeyB", "KeyZ", "KeyX", "KeyC", "KeyV", "KeyN", "KeyM", "KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ", "buildHotkey", "pointerdown", "basicAttackAtPointer", "drawMinimap", "RouteId", "setRouteTarget", "균등", "A 집중", "B 집중"]);
 });
 
 test("battle runtime uses shared factories, hero kits, smart brain, collision damage, and seeded randomness", async () => {
@@ -215,9 +234,10 @@ test("battle runtime uses shared factories, hero kits, smart brain, collision da
   hasAll(brain, ["retreat", "regroup", "support", "drill", "ultimate"]);
 });
 
-test("seven maps, five organic BGM tracks, faction voices, and material combat samples are wired into battle", async () => {
+test("ten mode-specific maps, five organic BGM tracks, faction voices, and material combat samples are wired into battle", async () => {
   const [maps, audio, catalog, app, generator] = await Promise.all([source("game/battleMaps.ts"), source("game/combatAudio.ts"), source("game/audioCatalog.ts"), source("app/Seoul999mBelow.tsx"), source("tools/generate-game-audio.mjs")]);
-  for (const id of ["central-exchange", "flooded-pump", "root-lab", "freight-fork", "thermal-shaft", "sealed-bunker", "ore-catacomb"]) hasAll(maps + app + catalog, [id]);
+  for (const id of ["secret-crossroads", "secret-reservoir", "secret-cache", "central-exchange", "flooded-pump", "root-lab", "freight-fork", "thermal-shaft", "sealed-bunker", "ore-catacomb"]) hasAll(maps + app + catalog, [id]);
+  hasAll(maps + app, ["SECRET_TUNNEL_MAPS", "OPEN_FRONT_BATTLE_MAPS", "battleMapsForRuleset", "defaultBattleMapForRuleset"]);
   assert.equal((catalog.match(/file: "\/assets\/audio\/bgm\//g) ?? []).length, 5);
   assert.equal((catalog.match(/^\s{2}["a-z0-9-]+: voice\(/gm) ?? []).length, 12);
   hasAll(audio, ["AudioContext", "HTMLAudioElement", "line.playbackRate * 2", 'line.style !== "ai" && line.style !== "bugborn"', "duckMusic", "skillCue", "impact(material", "dig(material", "down(faction", "result(outcome", "preloadCombatSamples", "preloadVoiceLines", "prepareHeroVoice", "voiceCache", "voiceReady", "audio.load()", "export const gameAudio"]);
@@ -362,6 +382,8 @@ test("secret-tunnel online snapshots are filtered per team without changing open
   assert.equal(redView.teamConnections.red, false);
   assert.deepEqual(Array.from(blueView.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 5]);
   assert.deepEqual(Array.from(redView.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 4]);
+  assert.equal(blueView.tunnelAccess.find((cell) => cell.x === 2).accessMask, 0, "enemy geometry stays hidden in prepare");
+  assert.equal(redView.tunnelAccess.find((cell) => cell.x === 1).accessMask, 0, "enemy geometry stays hidden in prepare");
   for (const cell of blueView.tunnelAccess) {
     assert.deepEqual(Object.keys(cell.durability), ["blue"]);
     assert.deepEqual(Object.keys(cell.maxDurability), ["blue"]);
@@ -386,6 +408,8 @@ test("secret-tunnel online snapshots are filtered per team without changing open
   );
   assert.equal(assault.heroes.length, 2, "assault reveals heroes for the normal client LOS pipeline");
   assert.deepEqual(Array.from(assault.tunnelAccess, (cell) => cell.x), [0, 1, 2, 3, 5]);
+  assert.equal(assault.tunnelAccess.find((cell) => cell.x === 2).accessMask, 2, "assault reveals enemy tunnel geometry");
+  assert.equal(assault.tunnelAccess.find((cell) => cell.x === 2).durability.blue, 12, "only own dig durability remains visible");
 
   const anonymous = context.runSnapshotForTeam(room);
   assert.deepEqual(Array.from(anonymous.tunnelAccess, (cell) => cell.accessMask), [3]);
@@ -483,6 +507,7 @@ test("tactical support uses readable two-column desktop rows and one-column mobi
   assert.match(css, /\.combat-command-dock \.tactical-support-menu > div\s*\{[^}]*repeat\(2, minmax\(0, 1fr\)\)/s);
   assert.match(css, /\.combat-command-dock > \.build-menu\s*\{[^}]*width:\s*min\(560px, calc\(100vw - 224px\)\)/s);
   hasAll(css, ["word-break: keep-all", ".tactical-support-menu button i", "max-height: calc(100vh - 128px)"]);
+  hasAll(css, ["@media (max-width: 760px), (max-height: 680px)", "position: fixed", "inset: 52px 8px 86px 8px !important"]);
 });
 
 test("active tactical support renders a pulsing body glow, foot ring, sparks, and role badge", async () => {
@@ -564,7 +589,7 @@ test("combat dock uses compact icon commands with keyboard-accessible explanatio
     ".icon-command:focus-visible::after",
     'grid-template-areas: "status build routes utility skills"',
     "grid-template-columns: 200px 52px 236px 194px 194px",
-    "grid-template-rows: repeat(2, 25px)",
+    "grid-template-rows: 27px 24px",
     "transform: translateX(-50%)",
   ]);
   assert.ok(!app.includes("<small>{hud.money}₡</small>"), "build toggle must not duplicate credits");
@@ -578,12 +603,92 @@ test("strategic squads keep exact Ctrl targets while the last edited lane avoids
     "diverseRouteToGoal(base, target, (px, py) => openForTeam(px, py, team), avoidedCells, {",
     "hardAvoidRadius: 2",
     "oppositeSidePenalty: 18",
+    'preferredVerticalDirection: id === "A" ? -1 : 1',
     "route.plannedCells = plan.cells.slice(1)",
     "const routePoints = routeTravelPoints(route)",
-    "assaultContinues = last && stance === \"assault\" && knowsEnemyBase",
+    "assaultContinues = last && stanceBehavior.continuesToCore && knowsEnemyBase",
+    'marchStanceBehavior("assault")',
+    "if (unit.routeId !== assignedRouteId)",
+    "assignedRouteProgress = advanceRouteCursor(",
+    "Treat this as traffic, not as a broken A/B tunnel",
     "별도 우회로 없음 · 공용 병목 사용",
   ]);
   assert.ok(!app.includes("canHoldLane"), "route target must not inject an automatic enemy gate");
+  const minionRuntime = app.slice(app.indexOf("const stepMinion ="), app.indexOf("const drawMarchRoutes"));
+  assert.ok(!/\bstance\s*===/.test(minionRuntime), "the unified assault runtime must not reference a removed stance variable");
+});
+
+test("all modes expose badge-based detailed A/B routing, Ctrl quick aim, and allocation without rewinding active waves", async () => {
+  const [app, navigation, runtime, room, worker, css, movement] = await Promise.all([
+    source("app/Seoul999mBelow.tsx"),
+    source("game/gridNavigation.ts"),
+    source("game/runtimeEntities.ts"),
+    source("game/onlineRoom.ts"),
+    source("worker/index.ts"),
+    source("app/globals.css"),
+    source("game/movementRules.ts"),
+  ]);
+  hasAll(app, [
+    'onClick={() => command(`route:${id}`)}',
+    'e.code !== "Digit1" && e.code !== "Digit2"',
+    "routeApply",
+    "routeReset",
+    "{id} 설정",
+    'className="route-section-label"',
+    'allocation.replace(":", "/")',
+    "빠른 지정",
+    "마지막 지점이 최종 목적지",
+    "다음 웨이브부터 진군 배분",
+    'chooseSecretTunnelRoute(index + wave * 4, tunnelAllocations[team])',
+    'publishOnlineInput({ type: "route", route: id, points })',
+    "forwardRouteRejoin(",
+    "routeReverseLockUntil",
+    "if (!teamMarchRoutes.blue.A.points.length)",
+    "if (!teamMarchRoutes.blue.B.points.length)",
+  ]);
+  hasAll(navigation, ["export const forwardRouteRejoin", "forwardCells = cells.slice(firstForwardIndex)"]);
+  hasAll(runtime, ["routePreviousX?: number", "routePreviousY?: number", "routeReverseLockUntil?: number"]);
+  hasAll(room, ["points?: Array<{ x: number; y: number }>"]);
+  hasAll(worker, ["command.points.length > 64", "command.points.some"]);
+  hasAll(css, [".route-command-panel", ".route-edit-toolbar", ".route-hotkeys > .route-lanes", ".route-allocation", ".route-section-label", ".allocation-routes", "grid-template-columns: 55px minmax(0, 1fr) minmax(0, 1fr)"]);
+  hasAll(movement, ["GLOBAL_UNIT_MOVEMENT_MULTIPLIER = 1.3", "unitMovementSpeed", "unitMovementDuration"]);
+  const localAllocation = app.slice(app.indexOf('if (cmd.startsWith("allocation:"))'), app.indexOf('if (cmd === "route:off")'));
+  const onlineAllocation = app.slice(app.indexOf('command.type === "allocation"'), app.indexOf('command.type === "build"'));
+  assert.ok(!localAllocation.includes("routePointIndex = 0"), "allocation must not rewind an active local wave");
+  assert.ok(!onlineAllocation.includes("routePointIndex = 0"), "allocation must not rewind an active online wave");
+  assert.ok(!app.includes("이전 포인트로 후퇴"), "temporary blockage must not turn a route into a retreat loop");
+  assert.ok(!app.includes("route-row-actions"), "separate edit and stance buttons must stay removed");
+  assert.ok(!app.includes('command(`stance:'), "all routes must share the assault behavior");
+});
+
+test("route editing keeps a visible draft guide, right-drag panning, faster movement, and hero congestion recovery", async () => {
+  const [app, css] = await Promise.all([
+    source("app/Seoul999mBelow.tsx"),
+    source("app/globals.css"),
+  ]);
+  const routeOverlay = app.slice(app.indexOf("drawMarchRoutes ="), app.indexOf("heroBrainRole =")),
+    pointerDown = app.slice(app.indexOf("pointerdown ="), app.indexOf("pointermove =")),
+    heroStep = app.slice(app.indexOf("stepBattleHero ="), app.indexOf("const arenaFighters"));
+  hasAll(routeOverlay, [
+    'ctx.strokeStyle = "#ffe071"',
+    "routeDraftPoints.forEach",
+    "String(index + 1)",
+    "`${routeEdit} 최종`",
+  ]);
+  assert.ok(!pointerDown.includes("if (routeEdit || routeQuickAim) return"), "right drag must stay available while editing a route");
+  hasAll(heroStep, [
+    "targetRecovery = DIRS",
+    "aiAvoidTargetId",
+    "공격 위치가 막혀 측면 칸으로 이동",
+    "공세 경로를 다시 탐색",
+  ]);
+  hasAll(app, [
+    "unitMovementSpeed(playerDef.stats.moveSpeed)",
+    "unitMovementSpeed(u.moveSpeed)",
+    "unitMovementDuration(1000 / scientist.moveSpeed)",
+  ]);
+  assert.ok(css.includes("width: 236px"), "desktop route panel must fit the original compact dock width");
+  assert.ok(!css.includes("min-width: 350px"), "the expanded route cards must not return");
 });
 
 test("minion path selection cannot reserve and then reject its own next cell", async () => {
@@ -663,7 +768,7 @@ test("campaign 1 invaders push Seoul without a red base and all hero labels own 
     'u.role === "hero" ? `${u.name} · LV.${u.level}` : u.name',
     "campaign1AdvanceWatch",
     "CAMPAIGN1_RETREAT_AFTER_MS",
-    "campaign1Invader || stance === \"guard\"",
+    "priorityEnemy = retainedEnemy ?? (campaign1Invader",
     "u.campaignWaveId === 1",
     "CAMPAIGN1_VENT_DELAY_MS",
     "drawCampaignVent",
@@ -711,7 +816,7 @@ test("campaign replay fixes keep waves, escorts, companions, predeployed rooms, 
     "CAMPAIGN_ASSIST_RADIUS",
     "CAMPAIGN_SENTRY_AGGRO_DISTANCE",
     "unit.id === aiHero.aiTargetId",
-    "!companion && !sentry && decision.action === \"drill\"",
+    "decision.action === \"drill\"",
     "companionHasLocalCore",
     "const coreApproachPlan = !target && coreAssault",
     "localInstallation = forcedRejoin",
@@ -806,10 +911,10 @@ test("the first input starts persistent menu audio without a dedicated button", 
   assert.ok(!app.includes("BGM 시작"));
 });
 
-test("both route panels remain visible and the minimap can be collapsed without an active hit layer", async () => {
+test("both route panels remain visible and the minimap stays aligned for collapse and drag", async () => {
   const [app, css] = await Promise.all([source("app/Seoul999mBelow.tsx"), source("app/globals.css")]);
-  hasAll(app, ["minimapCollapsed", "minimapCollapsedRef", "toggleMinimap", "미니맵 펼치기", "미니맵 접기"]);
-  hasAll(css, ["grid-template-columns: repeat(2, minmax(0, 1fr))", ".minimap-toggle.collapsed", ".battle-stage .minimap-hit[hidden]"]);
+  hasAll(app, ["minimapCollapsed", "minimapCollapsedRef", "toggleMinimap", "syncMinimapOverlay", 'stage.style.setProperty("--minimap-left"', 'stage.style.setProperty("--minimap-top"', "미니맵 펼치기", "미니맵 접기"]);
+  hasAll(css, ["grid-template-columns: repeat(2, minmax(0, 1fr))", ".minimap-toggle.collapsed", ".battle-stage .minimap-hit[hidden]", ".battle-stage.minimap-layout-ready .minimap-hit", "left: var(--minimap-left", "top: var(--minimap-top"]);
 });
 
 test("growth, blockers, campaign defenders, healing, and terrain combat rules stay explicit", async () => {
@@ -832,8 +937,11 @@ test("growth, blockers, campaign defenders, healing, and terrain combat rules st
     'window.setTimeout(() => setOutcome("lose"), 5000)',
     "emergencyRepairAmount(hero.maxHp)",
     "coreRegenAmount(",
-    "hero.maxHp * 0.3",
-    "에너지 드링크 · 체력 30% 회복 + 5초 가속",
+    "ENERGY_DRINK_HEAL_RATIO",
+    "에너지 드링크 · 체력 60% 회복 + 5초 가속",
+    "itemCharges[slot] = Math.max(0, itemCharges[slot] - 1)",
+    'itemCharges: [number, number] = isCampaign',
+    '(unit.role === "hero" || unit.role === "minion")',
     'u.campaignThreat === "boss"',
     "gainHeroXp(8)",
     "clearRay(hero.x, hero.y, u.x, u.y)",
@@ -847,7 +955,7 @@ test("growth, blockers, campaign defenders, healing, and terrain combat rules st
   assert.ok(minionStep.includes('melee(u, { x: enemyBase.x - u.x, y: enemyBase.y - u.y }, 0, "coreSiege")'), "minions adjacent to a core must attack it directly");
 });
 
-test("core siege AI, build shortcut, coordinate bombardment, and slower talents stay wired to runtime", async () => {
+test("core siege AI, fourteen build shortcuts, computer restart, coordinate bombardment, and slower talents stay wired to runtime", async () => {
   const app = await source("app/Seoul999mBelow.tsx"),
     heroStep = app.slice(app.indexOf("stepBattleHero ="), app.indexOf("const arenaFighters")),
     meleeResolver = app.slice(app.indexOf("const resolveMelee ="), app.indexOf("const updateMeleeHits")),
@@ -855,12 +963,33 @@ test("core siege AI, build shortcut, coordinate bombardment, and slower talents 
   hasAll(app, [
     '<kbd>B</kbd>',
     'if (e.code === "KeyB")',
+    '"KeyZ", "KeyX", "KeyC", "KeyV", "KeyB", "KeyN", "KeyM"',
+    '"KeyA", "KeyS", "KeyD", "KeyF", "KeyG", "KeyH", "KeyJ"',
+    '"build:upgrade"',
+    '"build:demolish"',
+    '"tactical:defense"',
+    '"tactical:reinforce"',
+    '"research:minion"',
+    '"elite:reserve"',
+    "e.stopImmediatePropagation()",
+    'e.ctrlKey && (e.code === "ShiftLeft" || e.code === "ShiftRight")',
+    'className="build-shortcut"',
+    'className="tactical-shortcut"',
     'setBuildMenuOpen((open) => !open)',
+    "const restartComputerBattle = () =>",
+    "setBattleRunId((run) => run + 1)",
+    "onClick={restartComputerBattle}",
     'attackTarget.kind === "base" ? "coreSiege" : undefined',
     'event.impactAt = now',
     'event.expiresAt = now + 520',
     'selectedTalentIds.length}/${TALENT_LEVELS.length}',
+    'className="talent-selected-card"',
+    'disabled={!pendingTalentTiers.includes(level) && !chosen}',
+    'inAllyCoreVision(x, y) || visionSources().some',
+    'cutVisionHole(',
   ]);
+  assert.ok(!app.includes("Ctrl+Shift+"), "all fourteen direct commands must use only Ctrl plus one letter");
+  assert.ok(!app.includes("location.reload()"), "computer rematch must restart the battle effect instead of reloading to the title");
   hasAll(heroStep, [
     "coreAssault = !sentry",
     'unit.id === aiHero.aiTargetId || unit === assistTarget',
@@ -963,4 +1092,140 @@ test("campaign difficulty buffs allies only and computer AI builds tactical inst
   assert.ok(!app.includes("enemyBuildCredits += 3"), "computer credits must follow combat and ore rewards");
   assert.ok(!app.includes('units.push(makeCampaignHero("sanmi", "red", 45, 20, "battle", 1))'), "campaign 1 must not spawn an early Sanmi boss");
   assert.ok(presentation.includes("c999: [-1, 1, -1, -1, 1, -1]"), "C-999 moving frame source direction must be independent from idle");
+});
+
+test("secret tunnel contacts, hidden public rooms, access-safe attacks, and region markings stay wired to runtime", async () => {
+  const [app, css, tunnelRules, battleMaps] = await Promise.all([
+    source("app/Seoul999mBelow.tsx"),
+    source("app/globals.css"),
+    source("game/secretTunnelRules.ts"),
+    source("game/battleMaps.ts"),
+  ]);
+  hasAll(app, [
+    "blueCoreArea",
+    "redCoreArea",
+    "preopenedPublicSpace",
+    "pickTeamSpawnCell",
+    "공동 접촉 터널 개통 · 맞닿은 양 팀 터널 공동화",
+    'hud.battlePhase !== "prepare"',
+    'className="tunnel-zone-legend"',
+    "아군 전용",
+    "적군 전용",
+    'B: { id: "B", color: "#ff78c8"',
+    "30초 초고속 굴착 · 4분 침공",
+    "secretTunnelRushDigDamage(",
+    "SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER",
+    "SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER",
+    "secretTunnelPrepareDuration(95)",
+    "expandedDrillReach(spec.length)",
+    "DRILL_ACTION_LOCK_MS",
+    "targetAccessible: canEngageAt(aiHero.team",
+    "컴퓨터 공세 영웅은 후퇴하지 않고 적 코어로 전진한다",
+    "setSelectedMapId(defaultBattleMapForRuleset(ruleset));",
+    "secretTunnelCoreEntryGoal(opposingCore, teamHeroSlot)",
+    "executeBattleHeroDrill(aiHero, goal, { direction: step })",
+  ]);
+  hasAll(css, [
+    ".tunnel-zone-legend",
+    ".secret-phase-announcement",
+    ".tunnel-zone-legend .opponent i",
+  ]);
+  assert.ok(!css.includes(".tunnel-zone-legend .shared"), "shared spaces must not have a legend style");
+  assert.ok(!css.includes(".tunnel-zone-legend .routes"), "A/B routes must remain independent from the ownership legend");
+  assert.ok(!app.includes("setSelectedMapId(defaultBattleMapForRuleset(ruleset).id)"), "open-front selection must keep its map id string");
+  hasAll(tunnelRules, [
+    "return phase !== \"finished\"",
+    "shareAdjacentSecretTunnelContacts",
+    "revealOpponent && opponentPrivate",
+  ]);
+  for (const retiredConcept of [
+    "secretTunnelCombatApronPoints",
+    "shareSecretTunnelCombatAprons",
+    "secretCombatApronKeys",
+    "combatApron",
+    "코어 전실",
+    "공용 전실",
+    "공용 전투구역",
+  ]) assert.ok(!app.includes(retiredConcept), `${retiredConcept} must be retired from runtime`);
+  assert.ok(!css.includes(".tunnel-zone-legend .apron"), "the retired apron legend style must be absent");
+  assert.ok(!tunnelRules.includes("CombatApron"), "the rules module must not retain a special core-apron type");
+  hasAll(battleMaps, ["seedSecretOreVeins", 'id.startsWith("secret-")', "ore: 26 +"]);
+
+  const overlayStart = app.indexOf("secretTunnelOverlay = createSecretTunnelOverlay({");
+  const overlayInit = app.slice(overlayStart, app.indexOf("if (isCampaign) {", overlayStart));
+  hasAll(overlayInit, [
+    "blueCoreArea",
+    "redCoreArea",
+    "Math.abs(x - ALLY.x)",
+    "Math.abs(x - ENEMY.x)",
+    "<= 4",
+    "TUNNEL_ACCESS.shared",
+  ]);
+  assert.ok(!overlayInit.includes("seen[y][x] = true"), "pre-opened shared rooms must stay fogged until explored");
+  assert.ok(!overlayInit.includes("* 5"), "secret-tunnel walls must keep the original terrain durability");
+  const secretDig = app.slice(app.indexOf("result = digSecretTunnelTileAndShareContacts("), app.indexOf("secretTunnelOverlay = result.overlay"));
+  assert.ok(secretDig.includes("u.team,\n              rushPower,"), "secret-tunnel preparation must clear the remaining team durability in one hit");
+  assert.ok(!secretDig.includes("power * 1.6"), "secret-tunnel preparation must not use a partial damage multiplier");
+  hasAll(app, [
+    'announceSecretPhase("터널 뚫기 시작"',
+    'announceSecretPhase("거점 공격 시작"',
+    "resetSecretTunnelHeroesToCores",
+    "영웅 전원 기지 복귀",
+    'useState<BattleMapId>("secret-crossroads")',
+  ]);
+  const accessOverlay = app.slice(app.indexOf("drawTunnelAccessOverlay ="), app.indexOf("render =", app.indexOf("drawTunnelAccessOverlay =")));
+  hasAll(accessOverlay, [
+    'battlePhase === "prepare"',
+    "TUNNEL_ACCESS.blue",
+    "TUNNEL_ACCESS.red",
+    "ctx.fillRect(px - 1, py - 1, S + 2, S + 2)",
+    "accessAt(x - 1, y) !== tile.access",
+    "accessAt(x + 1, y) !== tile.access",
+    "accessAt(x, y - 1) !== tile.access",
+    "accessAt(x, y + 1) !== tile.access",
+    "if (!own)",
+    "ctx.setLineDash([3, 4])",
+    'ctx.strokeStyle = "#ffaca7"',
+  ]);
+  for (const retiredSharedMark of ["TUNNEL_ACCESS.shared", "sharedContact", "sharedBackbone", "strokeRect"])
+    assert.ok(!accessOverlay.includes(retiredSharedMark), `${retiredSharedMark} must not be rendered in the ownership overlay`);
+  assert.ok(!accessOverlay.includes("contactBulkhead"), "the retired X contact bulkhead must not be rendered");
+  const routeOverlay = app.slice(app.indexOf("drawMarchRoutes ="), app.indexOf("heroBrainRole ="));
+  assert.ok(routeOverlay.includes('battlePhase === "prepare"'), "A/B route markings must stay hidden during digging");
+  assert.ok(!routeOverlay.includes("secretCombatApronKeys"), "A/B routes must not depend on a retired apron concept");
+
+  const spawnSelection = app.slice(app.indexOf("const pickTeamSpawnCell ="), app.indexOf("spawnMinion ="));
+  hasAll(spawnSelection, [
+    "openForTeam(cell.x, cell.y, team)",
+    "return candidates.find(available)",
+  ]);
+  const protectedAttackSlices = [
+    ["spec.mode === \"acidMark\"", "spec.mode === \"silkPull\""],
+    ["spec.mode === \"silkPull\"", "spec.mode === \"nightPatrol\""],
+    ["spec.mode === \"microwave\"", "spec.mode === \"acidCone\""],
+    ["spec.mode === \"overclock\"", "spec.mode === \"lockdown\""],
+  ];
+  for (const [start, end] of protectedAttackSlices) {
+    const section = app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start) + start.length));
+    assert.ok(section.includes("canEngageAt"), `${start} must respect secret-tunnel access`);
+  }
+  for (const [start, end] of protectedAttackSlices.slice(0, 3)) {
+    const section = app.slice(app.indexOf(start), app.indexOf(end, app.indexOf(start) + start.length));
+    assert.ok(!section.includes("clearRay("), `${start} must keep its existing wall-piercing targeting in other modes`);
+  }
+  const fillGuard = app.slice(app.indexOf("fillPlacementError ="), app.indexOf("toggleFillMode ="));
+  hasAll(fillGuard, ["TUNNEL_ACCESS.shared", "공동 터널은 메울 수 없다"]);
+  const rejectStart = app.indexOf('f.kind === "reject"');
+  const rejectField = app.slice(rejectStart, app.indexOf('if (f.kind === "repair")', rejectStart));
+  assert.ok(rejectField.includes("canEngageAt"), "the moving reject wall must not damage through a private tunnel");
+  assert.ok(
+    rejectField.includes('canEngageAt(f.team ?? "blue", Math.floor(sx), Math.floor(sy))'),
+    "the moving reject wall must not reflect projectiles through a private tunnel",
+  );
+  const eliteSweepAction = app.indexOf('action: "포식 휩쓸기"');
+  const eliteSweep = app.slice(
+    app.lastIndexOf('if (u.minionRole === "elite" && u.faction === "bugborn"', eliteSweepAction),
+    app.indexOf("u.act = attackDelay", eliteSweepAction),
+  );
+  assert.ok(eliteSweep.includes("canEngageAt"), "the Bugborn elite sweep must not damage through a private tunnel");
 });

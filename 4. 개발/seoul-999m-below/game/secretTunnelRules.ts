@@ -11,12 +11,37 @@ export const TUNNEL_ACCESS = {
 
 export type BattlePhase = "prepare" | "assault" | "finished";
 
-export const SECRET_TUNNEL_PREPARE_SECONDS = 120,
+export const SECRET_TUNNEL_PREPARE_SECONDS = 30,
   SECRET_TUNNEL_ASSAULT_SECONDS = 240,
   SECRET_TUNNEL_PREPARE_MS = SECRET_TUNNEL_PREPARE_SECONDS * 1000,
   SECRET_TUNNEL_ASSAULT_MS = SECRET_TUNNEL_ASSAULT_SECONDS * 1000,
   SECRET_TUNNEL_MATCH_MS = SECRET_TUNNEL_PREPARE_MS + SECRET_TUNNEL_ASSAULT_MS,
+  SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER = 2.25,
+  SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER = 0.25,
   DEFAULT_TUNNEL_DURABILITY = 3;
+
+export const secretTunnelPrepareDuration = (durationMs: number) => {
+  if (!Number.isFinite(durationMs) || durationMs < 0)
+    throw new RangeError("Secret Tunnel duration must be finite and non-negative");
+  if (durationMs === 0) return 0;
+  return Math.max(1, Math.round(durationMs / SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER));
+};
+
+/**
+ * Secret Tunnel preparation is a short route-drafting sprint. A normal dig
+ * input therefore clears the acting team's remaining durability in one hit.
+ * Other rulesets keep their ordinary per-hit terrain damage.
+ */
+export const secretTunnelRushDigDamage = (
+  remainingDurability: number,
+  baseDamage = 1,
+) => {
+  if (!Number.isFinite(remainingDurability) || remainingDurability < 0)
+    throw new RangeError("Remaining tunnel durability must be finite and non-negative");
+  if (!Number.isFinite(baseDamage) || baseDamage < 0)
+    throw new RangeError("Base tunnel damage must be finite and non-negative");
+  return Math.max(remainingDurability, baseDamage);
+};
 
 export type TunnelPoint = { x: number; y: number };
 
@@ -26,9 +51,9 @@ export type SecretTunnelTileOverlay = {
   access: TunnelAccessMask;
   /** Records actual excavation, unlike access granted by a shared backbone. */
   excavatedBy: TunnelAccessMask;
-  /** Team that opened the cell first; used to privatize non-selected contacts. */
+  /** Team that opened the cell first; retained as provenance when access becomes shared. */
   owner: BattleTeam | null;
-  /** True only for the selected core-to-contact-to-core assault route. */
+  /** True for promoted shared infrastructure such as the assault route. */
   sharedBackbone: boolean;
 };
 
@@ -188,6 +213,67 @@ export const digSecretTunnelTile = (
   };
 };
 
+export type AdjacentTunnelContactResult = {
+  overlay: SecretTunnelOverlay;
+  changed: TunnelPoint[];
+};
+
+/**
+ * Orthogonally touching completed private tunnels become one shared contact.
+ * Diagonal corners and partial digs remain private because they do not form a
+ * traversable grid connection.
+ */
+export const shareAdjacentSecretTunnelContacts = (
+  overlay: SecretTunnelOverlay,
+  point: TunnelPoint,
+): AdjacentTunnelContactResult => {
+  const source = secretTunnelTileAt(overlay, point);
+  if (!source || (source.access !== TUNNEL_ACCESS.blue && source.access !== TUNNEL_ACCESS.red))
+    return { overlay, changed: [] };
+
+  const opponentAccess = source.access === TUNNEL_ACCESS.blue
+      ? TUNNEL_ACCESS.red
+      : TUNNEL_ACCESS.blue,
+    contacts = CARDINAL_DIRECTIONS
+      .map((direction) => ({ x: point.x + direction.x, y: point.y + direction.y }))
+      .filter((neighbor) => secretTunnelTileAt(overlay, neighbor)?.access === opponentAccess);
+  if (!contacts.length) return { overlay, changed: [] };
+
+  const changedKeys = new Set([point, ...contacts].map(pointKey)),
+    nextTiles = overlay.tiles.map((row, y) => row.map((tile, x) =>
+      changedKeys.has(`${x},${y}`)
+        ? {
+            ...tile,
+            durability: { blue: 0, red: 0 },
+            access: TUNNEL_ACCESS.shared,
+            sharedBackbone: false,
+          }
+        : tile,
+    ));
+  return {
+    overlay: { ...overlay, tiles: nextTiles },
+    changed: [...changedKeys].map(pointFromKey),
+  };
+};
+
+export const digSecretTunnelTileAndShareContacts = (
+  overlay: SecretTunnelOverlay,
+  point: TunnelPoint,
+  team: BattleTeam,
+  damage: number,
+): SecretTunnelDigResult => {
+  const result = digSecretTunnelTile(overlay, point, team, damage);
+  if (!result.opened) return result;
+  const adjacent = shareAdjacentSecretTunnelContacts(result.overlay, point);
+  if (!adjacent.changed.length) return result;
+  return {
+    ...result,
+    overlay: adjacent.overlay,
+    tile: secretTunnelTileAt(adjacent.overlay, point)!,
+    becameShared: true,
+  };
+};
+
 export const canTraverseSecretTunnel = (
   overlay: SecretTunnelOverlay,
   point: TunnelPoint,
@@ -197,11 +283,8 @@ export const canTraverseSecretTunnel = (
   return Boolean(tile && tunnelAccessIncludesTeam(tile.access, team));
 };
 
-/**
- * A cell excavated by both teams is a contact bulkhead during preparation.
- * It remains valid for connection evaluation, but nobody can cross it until
- * the assault phase opens the selected shared backbone.
- */
+/** Shared contacts are traversable during both active phases. Combat remains
+ * locked during preparation by the battle layer rather than tunnel access. */
 export const canTraverseSecretTunnelInPhase = (
   overlay: SecretTunnelOverlay,
   point: TunnelPoint,
@@ -210,14 +293,10 @@ export const canTraverseSecretTunnelInPhase = (
 ) => {
   const tile = secretTunnelTileAt(overlay, point);
   if (!tile || !tunnelAccessIncludesTeam(tile.access, team)) return false;
-  if (phase === "finished") return false;
-  return !(
-    tile.access === TUNNEL_ACCESS.shared &&
-    !tile.sharedBackbone
-  );
+  return phase !== "finished";
 };
 
-export type SecretTunnelVisibility = "hidden" | "digging" | "private" | "shared";
+export type SecretTunnelVisibility = "hidden" | "digging" | "private" | "opponent" | "shared";
 
 export type SecretTunnelTileView = {
   visibility: SecretTunnelVisibility;
@@ -231,9 +310,11 @@ export const secretTunnelTileViewForTeam = (
   overlay: SecretTunnelOverlay,
   point: TunnelPoint,
   team: BattleTeam,
+  revealOpponent = false,
 ): SecretTunnelTileView => {
   const tile = secretTunnelTileAt(overlay, point),
-    bit = TEAM_BITS[team];
+    bit = TEAM_BITS[team],
+    opponentBit = TEAM_BITS[opposingBattleTeam(team)];
   if (!tile)
     return {
       visibility: "hidden",
@@ -244,10 +325,13 @@ export const secretTunnelTileViewForTeam = (
     };
 
   const canTraverse = tunnelAccessIncludesTeam(tile.access, team),
+    opponentPrivate = tile.access === opponentBit,
     visibility: SecretTunnelVisibility = tile.access === TUNNEL_ACCESS.shared
       ? "shared"
       : canTraverse
         ? "private"
+        : revealOpponent && opponentPrivate
+          ? "opponent"
         : tile.durability[team] < tile.maxDurability[team]
           ? "digging"
           : "hidden";
@@ -257,9 +341,11 @@ export const secretTunnelTileViewForTeam = (
       ? TUNNEL_ACCESS.shared
       : canTraverse
         ? bit
+        : visibility === "opponent"
+          ? opponentBit
         : TUNNEL_ACCESS.none,
-    durability: visibility === "hidden" ? null : tile.durability[team],
-    maxDurability: visibility === "hidden" ? null : tile.maxDurability[team],
+    durability: visibility === "hidden" || visibility === "opponent" ? null : tile.durability[team],
+    maxDurability: visibility === "hidden" || visibility === "opponent" ? null : tile.maxDurability[team],
     canTraverse,
   };
 };
@@ -415,25 +501,7 @@ export const shareSecretTunnelBackbone = (
           sharedBackbone: true,
         };
       }
-      if (
-        tile.access !== TUNNEL_ACCESS.shared ||
-        tile.sharedBackbone
-      ) return tile;
-      const owner = tile.owner ?? "blue",
-        opponent = opposingBattleTeam(owner);
-      changed.push(point);
-      return {
-        ...tile,
-        durability: {
-          ...tile.durability,
-          [owner]: 0,
-          [opponent]: tile.maxDurability[opponent],
-        },
-        access: TEAM_BITS[owner],
-        excavatedBy: TEAM_BITS[owner],
-        owner,
-        sharedBackbone: false,
-      };
+      return tile;
     }));
   return {
     overlay: changed.length ? { ...overlay, tiles: nextTiles } : overlay,
@@ -449,15 +517,15 @@ export type SecretTunnelSealResult = {
   overlay: SecretTunnelOverlay;
   tile: SecretTunnelTileOverlay;
   sealed: boolean;
-  blockedReason: "core" | null;
+  blockedReason: "core" | "shared" | null;
   previousAccess: TunnelAccessMask;
   remainingAccess: TunnelAccessMask;
 };
 
 /**
- * Removes only the acting team's access, excavation record, and partial dig
- * progress. Core coordinates are required so neither stronghold cell can ever
- * be sealed through this public primitive.
+ * Removes only the acting team's private access, excavation record, and partial
+ * dig progress. Shared contact, backbone, apron, and core cells are permanent
+ * infrastructure and cannot be sealed through this public primitive.
  */
 export const sealSecretTunnelTileForTeam = (
   overlay: SecretTunnelOverlay,
@@ -474,6 +542,16 @@ export const sealSecretTunnelTileForTeam = (
       tile,
       sealed: false,
       blockedReason: "core",
+      previousAccess: tile.access,
+      remainingAccess: tile.access,
+    };
+
+  if (tile.access === TUNNEL_ACCESS.shared)
+    return {
+      overlay,
+      tile,
+      sealed: false,
+      blockedReason: "shared",
       previousAccess: tile.access,
       remainingAccess: tile.access,
     };

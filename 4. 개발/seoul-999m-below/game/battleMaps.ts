@@ -1,4 +1,4 @@
-import type { BattleMapId } from "./matchConfig";
+import type { BattleMapId, BattleRuleset } from "./matchConfig";
 
 export type BattleMapDefinition = {
   id: BattleMapId;
@@ -40,7 +40,45 @@ const RANDOM_SPAWN_PAIRS = [
   { blue: { x: 27, y: 6 }, red: { x: 28, y: 30 } },
 ] as const;
 
-export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
+const SECRET_SPAWN_PAIRS = [STANDARD_SPAWNS] as const;
+
+export const SECRET_TUNNEL_MAPS: readonly BattleMapDefinition[] = [
+  {
+    id: "secret-crossroads",
+    name: "폐쇄 환승광장",
+    subtitle: "중앙 공용홀 · 상하 대합실",
+    description: "넓은 중앙 환승광장과 떨어진 공용 대합실을 먼저 연결해 정면전과 우회를 설계하는 전장",
+    tacticalTags: ["입문", "공용 광장", "우회 굴착"],
+    bpm: 92,
+    hazard: "none",
+    spawns: STANDARD_SPAWNS,
+    spawnPairs: SECRET_SPAWN_PAIRS,
+  },
+  {
+    id: "secret-reservoir",
+    name: "침수 배수환",
+    subtitle: "상하 펌프실 · 중앙 점검실",
+    description: "느린 침수 공용실과 마른 비밀 지선 사이에서 접촉 시점과 공격 방향을 고르는 전장",
+    tacticalTags: ["침수", "양면 압박", "지역 통제"],
+    bpm: 78,
+    hazard: "water",
+    spawns: STANDARD_SPAWNS,
+    spawnPairs: SECRET_SPAWN_PAIRS,
+  },
+  {
+    id: "secret-cache",
+    name: "붕괴 보급고",
+    subtitle: "세 공용 보급실 · 고밀도 광맥",
+    description: "서로 떨어진 세 보급실 중 어느 곳을 먼저 연결할지 선택하고 광석 지선을 경쟁하는 전장",
+    tacticalTags: ["자원 경쟁", "세 갈래", "기만로"],
+    bpm: 84,
+    hazard: "maze",
+    spawns: STANDARD_SPAWNS,
+    spawnPairs: SECRET_SPAWN_PAIRS,
+  },
+] as const;
+
+export const OPEN_FRONT_BATTLE_MAPS: readonly BattleMapDefinition[] = [
   {
     id: "central-exchange",
     name: "서울 중앙 환승로",
@@ -120,6 +158,17 @@ export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
   },
 ] as const;
 
+export const BATTLE_MAPS: readonly BattleMapDefinition[] = [
+  ...SECRET_TUNNEL_MAPS,
+  ...OPEN_FRONT_BATTLE_MAPS,
+];
+
+export const battleMapsForRuleset = (ruleset: BattleRuleset) =>
+  ruleset === "secret-tunnel" ? SECRET_TUNNEL_MAPS : OPEN_FRONT_BATTLE_MAPS;
+
+export const defaultBattleMapForRuleset = (ruleset: BattleRuleset): BattleMapId =>
+  battleMapsForRuleset(ruleset)[0].id;
+
 export const resolveBattleSpawns = (definition: BattleMapDefinition, seed: number) => {
   const mixed = Math.imul((seed ^ 0x9e3779b9) >>> 0, 2654435761) >>> 0,
     pair = definition.spawnPairs[mixed % definition.spawnPairs.length],
@@ -197,9 +246,61 @@ export const applyBattleMapLayout = (
     openBases = () => {
       for (const core of [STANDARD_SPAWNS.blue, STANDARD_SPAWNS.red])
         carveRect(core.x - 4, core.y - 4, core.x + 4, core.y + 4);
+    },
+    seedSecretOreVeins = () => {
+      const salt = id === "secret-crossroads" ? 3 : id === "secret-reservoir" ? 7 : 11,
+        placed = new Set<string>();
+      for (let y = 4; y <= rows - 5; y++)
+        for (let x = 8; x < Math.floor(cols / 2); x++) {
+          if ((x * 13 + y * 17 + x * y + salt) % 17 !== 0) continue;
+          for (const [oreX, oreY] of [[x, y], [cols - 1 - x, rows - 1 - y]] as const) {
+            const tile = grid[oreY]?.[oreX],
+              outsideCoreRooms = [STANDARD_SPAWNS.blue, STANDARD_SPAWNS.red].every(
+                (core) => Math.max(Math.abs(oreX - core.x), Math.abs(oreY - core.y)) > 5,
+              ),
+              key = `${oreX},${oreY}`;
+            if (
+              !tile ||
+              placed.has(key) ||
+              !outsideCoreRooms ||
+              tile.type === 0 ||
+              tile.type === 4
+            ) continue;
+            placed.add(key);
+            put(oreX, oreY, {
+              type: 3,
+              hp: 5,
+              max: 5,
+              ore: 26 + ((oreX + oreY + salt) % 3) * 6,
+            });
+          }
+        }
     };
 
-  if (id === "central-exchange") {
+  if (id === "secret-crossroads") {
+    carveRect(24, 14, 31, 21, { type: 0, hp: 0, max: 0, surface: "platform" });
+    for (const [x0, y0, x1, y1] of [
+      [17, 7, 22, 11], [33, 7, 38, 11], [17, 24, 22, 28], [33, 24, 38, 28],
+    ] as const) carveRect(x0, y0, x1, y1);
+    wallRect(25, 10, 30, 11, "ledge");
+    wallRect(25, 24, 30, 25, "ledge");
+  } else if (id === "secret-reservoir") {
+    carveRect(19, 6, 36, 11, { type: 0, hp: 0, max: 0, surface: "shallowWater" });
+    carveRect(19, 24, 36, 29, { type: 0, hp: 0, max: 0, surface: "shallowWater" });
+    carveRect(25, 15, 30, 20, { type: 0, hp: 0, max: 0, surface: "platform" });
+    carveRect(24, 12, 31, 13, { type: 4, hp: 99, max: 99, obstacle: "deepWater" });
+    carveRect(24, 22, 31, 23, { type: 4, hp: 99, max: 99, obstacle: "deepWater" });
+  } else if (id === "secret-cache") {
+    carveRect(24, 15, 31, 20, { type: 0, hp: 0, max: 0, surface: "platform" });
+    carveRect(16, 8, 21, 13, { type: 0, hp: 0, max: 0, surface: "platform" });
+    carveRect(34, 22, 39, 27, { type: 0, hp: 0, max: 0, surface: "platform" });
+    for (const [x, y] of [
+      [13, 15], [14, 16], [20, 18], [22, 21], [27, 12], [28, 23],
+      [33, 14], [35, 17], [41, 19], [42, 20], [18, 25], [37, 10],
+    ] as const) put(x, y, { type: 3, hp: 5, max: 5, ore: 34 });
+    wallRect(26, 7, 29, 9, "ledge");
+    wallRect(26, 27, 29, 29, "ledge");
+  } else if (id === "central-exchange") {
     carveLane([[6, 18], [49, 18]], 2);
     carveLane([[6, 18], [14, 9], [41, 9], [49, 18]], 1);
     carveLane([[6, 18], [14, 27], [41, 27], [49, 18]], 1);
@@ -259,7 +360,8 @@ export const applyBattleMapLayout = (
     wallRect(25, 12, 30, 16, "ledge");
     wallRect(25, 20, 30, 24, "ledge");
   }
+  if (id.startsWith("secret-")) seedSecretOreVeins();
   openBases();
-  for (const pair of RANDOM_SPAWN_PAIRS)
+  for (const pair of battleMap(id).spawnPairs)
     for (const core of [pair.blue, pair.red]) carveRect(core.x - 3, core.y - 3, core.x + 3, core.y + 3);
 };

@@ -10,6 +10,9 @@ export const resolveBattleRuleset = (
   value?: BattleRuleset | string | null,
 ): BattleRuleset => value === "open-front" ? "open-front" : DEFAULT_BATTLE_RULESET;
 export type BattleMapId =
+  | "secret-crossroads"
+  | "secret-reservoir"
+  | "secret-cache"
   | "central-exchange"
   | "flooded-pump"
   | "root-lab"

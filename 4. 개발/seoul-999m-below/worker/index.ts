@@ -58,6 +58,7 @@ type RoomActionBody = {
     drillCooldownMultiplier?: number;
     slot?: 1 | 2 | 4;
     route?: "A" | "B";
+    points?: Array<{ x: number; y: number }>;
     allocation?: OnlineRouteAllocation;
     kind?: string;
     tacticalRole?: TacticalRole;
@@ -157,9 +158,9 @@ const snapshotForTeam = (
     teamRouteAllocations: viewerTeam && snapshot.teamRouteAllocations?.[viewerTeam]
       ? { [viewerTeam]: snapshot.teamRouteAllocations[viewerTeam] }
       : undefined,
-    // 상대 전용 굴은 전투 단계가 바뀐 뒤에도 비공개다. 부분 굴착 수치와
-    // 굴착 주체도 뷰어 팀 키만 남긴다. 팀을 식별할 수 없는 비인증
-    // 뷰에는 공유 간선(3)의 형상만 노출한다.
+    // 준비 중에는 상대 전용 굴을 숨긴다. 침공이 시작되면 경로 형상만
+    // 공개하되 내구도·굴착 주체·소유자 정보는 계속 제거한다. 팀을
+    // 식별할 수 없는 비인증 뷰에는 공유 간선(3)의 형상만 노출한다.
     tunnelAccess: snapshot.tunnelAccess
       ?.filter((cell) => {
         if (!viewerTeam) return cell.accessMask === 3;
@@ -170,7 +171,8 @@ const snapshotForTeam = (
           opponentMaximum = cell.maxDurability?.[opponent],
           ownHasProgress = ownDurability !== undefined && ownMaximum !== undefined && ownDurability < ownMaximum,
           opponentHasProgress = opponentDurability !== undefined && opponentMaximum !== undefined && opponentDurability < opponentMaximum;
-        if (cell.accessMask === opponentAccessMask) return ownHasProgress;
+        if (cell.accessMask === opponentAccessMask)
+          return snapshot.phase !== "prepare" || ownHasProgress;
         if (cell.accessMask !== 0) return true;
         // 아직 열린 팀이 없는 셀은 내 부분 굴착 진행이 있을 때만 보낸다.
         return ownHasProgress && (!opponentHasProgress || ownHasProgress);
@@ -189,8 +191,12 @@ const snapshotForTeam = (
           ownOwner = viewerTeam && owner === viewerTeam ? owner : undefined;
         return {
           ...geometry,
-          accessMask: geometry.accessMask === opponentAccessMask ? 0 : geometry.accessMask,
-          sharedBackbone: geometry.accessMask === opponentAccessMask ? false : geometry.sharedBackbone,
+          accessMask: geometry.accessMask === opponentAccessMask && snapshot.phase === "prepare"
+            ? 0
+            : geometry.accessMask,
+          sharedBackbone: geometry.accessMask === opponentAccessMask
+            ? false
+            : geometry.sharedBackbone,
           ...(ownDurability ? { durability: ownDurability } : {}),
           ...(ownMaxDurability ? { maxDurability: ownMaxDurability } : {}),
           ...(ownExcavatedBy !== undefined ? { excavatedBy: ownExcavatedBy } : {}),
@@ -336,6 +342,28 @@ export class RoomHub extends DurableObject<Env> {
         !isOnlineRouteAllocation(command.allocation)
       )
         return { error: "잘못된 공격로 배분입니다.", status: 400 };
+      if (
+        command.type === "route" &&
+        (
+          (command.route !== "A" && command.route !== "B") ||
+          (
+            command.points !== undefined &&
+            (
+              !Array.isArray(command.points) ||
+              command.points.length === 0 ||
+              command.points.length > 64 ||
+              command.points.some((point) =>
+                !Number.isFinite(point?.x) || !Number.isFinite(point?.y)
+              )
+            )
+          ) ||
+          (
+            command.points === undefined &&
+            (!Number.isFinite(command.x) || !Number.isFinite(command.y))
+          )
+        )
+      )
+        return { error: "잘못된 진군 경로입니다.", status: 400 };
       if (
         command.type === "drill" &&
         (

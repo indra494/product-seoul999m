@@ -1,4 +1,5 @@
-export const EMERGENCY_REPAIR_RATIO = 0.9;
+export const ENERGY_DRINK_HEAL_RATIO = 0.6;
+export const EMERGENCY_REPAIR_RATIO = 1;
 export const CORE_REGEN_RADIUS = 4.5;
 export const CORE_REGEN_DELAY_MS = 4000;
 export const CORE_REGEN_PER_SECOND = 0.06;

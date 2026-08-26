@@ -27,6 +27,23 @@ export const MINION_ENGAGEMENT_RADIUS = 8;
 export const MINION_PURSUIT_DISTANCE = 12;
 export const MINION_TARGET_MEMORY_MS = 4_200;
 
+export type SkirmishRouteStance = "assault" | "guard" | "capture";
+
+export const marchStanceBehavior = (stance: SkirmishRouteStance) => ({
+  pursuitRadius: stance === "assault" ? 7 : stance === "capture" ? 6 : 0,
+  captureLeashRadius: stance === "capture" ? 5 : 0,
+  continuesToCore: stance === "assault",
+  holdsAtRally: stance !== "assault",
+});
+
+export const secretTunnelCoreEntryGoal = (
+  enemyCore: { x: number; y: number },
+  heroSlot: number,
+) => ({
+  x: enemyCore.x,
+  y: enemyCore.y + (heroSlot % 2 === 0 ? -2 : 2),
+});
+
 export const minionExplorationCohort = (
   aiCohort: number | undefined,
   unitId: number,
@@ -46,13 +63,16 @@ export const skirmishHeroShouldPursue = (input: {
   aggroRadius: number;
   locked: boolean;
   forced?: boolean;
+  targetAccessible?: boolean;
 }) =>
-  Boolean(input.forced) ||
-  input.directDistance <= input.aggroRadius ||
-  (
-    input.locked &&
-    input.routeDistance !== null &&
-    input.routeDistance <= SKIRMISH_HERO_PURSUIT_DISTANCE
+  input.targetAccessible !== false && (
+    Boolean(input.forced) ||
+    input.directDistance <= input.aggroRadius ||
+    (
+      input.locked &&
+      input.routeDistance !== null &&
+      input.routeDistance <= SKIRMISH_HERO_PURSUIT_DISTANCE
+    )
   );
 
 export const computerWaveFormation = (input: {

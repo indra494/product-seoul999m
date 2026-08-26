@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { BATTLE_MAPS, applyBattleMapLayout, battleExplorationSectors, resolveBattleSpawns, resolveLocalBattleSpawns } from "../game/battleMaps.ts";
+import { BATTLE_MAPS, OPEN_FRONT_BATTLE_MAPS, SECRET_TUNNEL_MAPS, applyBattleMapLayout, battleExplorationSectors, battleMapsForRuleset, defaultBattleMapForRuleset, resolveBattleSpawns, resolveLocalBattleSpawns } from "../game/battleMaps.ts";
 import { siegeResponse } from "../game/aiSiegeRules.ts";
 import { buildPlacementCost, nearbyAttackFacilityCount } from "../game/buildRules.ts";
 import { CORE_REGEN_DELAY_MS, coreRegenAmount, emergencyRepairAmount } from "../game/healingRules.ts";
 import { decideHeroAction } from "../game/heroBrain.ts";
-import { radialDrillOffsets } from "../game/drillRules.ts";
+import { DRILL_ACTION_LOCK_MS, DRILL_RANGE_MULTIPLIER, expandedDrillReach, radialDrillOffsets } from "../game/drillRules.ts";
 import { BUILDABLES, HERO_LEVELS, MINIONS, MINION_LEVELS, minionLevelForWave, supportAuraAppliesToRole, supportAuraValue } from "../game/content.ts";
 import { HERO_KITS } from "../game/heroKits.ts";
 import { HERO_TALENT_TREES, TALENT_LEVELS, combineHeroTalentEffects, heroTalentChoices } from "../game/heroTalents.ts";
@@ -13,16 +13,16 @@ import { CAMPAIGN1_MAX_ACTIVE_INVADERS, CAMPAIGN1_REGROUP_AFTER_MS, CAMPAIGN1_RE
 import { canDamageCore, canDamageShield, exposedCoreDamage } from "../game/coreCombatRules.ts";
 import { CAMPAIGN_OBJECTIVES, campaignObjectiveProgress } from "../game/campaignObjectives.ts";
 import { CAMPAIGN_CINEMATICS, CAMPAIGN_PROLOGUE_STORAGE_KEY, CAMPAIGN_PROLOGUE_VIDEO, campaignChapterStatus, completeCampaignChapter, hasSeenCampaignPrologue, parseCampaignChapterList, unlockedCampaignChapter } from "../game/campaignProgress.ts";
-import { attackPositionCandidates, diverseRouteToGoal, reachableFrontierGoal, shortestRouteToAny, stitchRoutePoints } from "../game/gridNavigation.ts";
+import { advanceRouteCursor, attackPositionCandidates, diverseRouteToGoal, forwardRouteRejoin, reachableFrontierGoal, shortestRouteToAny, stitchRoutePoints } from "../game/gridNavigation.ts";
 import { EMERGENCY_BREACH_DELAY_MS, canEmergencyBreach } from "../game/minionBreachRules.ts";
 import { MINION_COMBAT_SLOT_MEMORY_MS, MINION_FLANK_REPLAN_MS, chooseCombatApproachSlot, minionCombatDetourAllowance } from "../game/minionCoordination.ts";
 import { ONLINE_REMOTE_INTERPOLATION_MS, ONLINE_SNAPSHOT_INTERVAL_MS, ONLINE_SOCKET_HEARTBEAT_MS, ONLINE_SOCKET_RECONNECT_MAX_MS, newestOnlineRoomView, opponentTeam, shouldApplyAuthoritativeHeroPosition } from "../game/onlineRoom.ts";
 import { guaranteedMinionLevelForWave, minionResearchReady, minionResearchUnlockWave, nextMinionResearch, teamMinionLevels } from "../game/minionResearch.ts";
 import { ELITE_RECOVERY_SCALE, ELITE_TACTICAL_EFFECT_SCALE, TACTICAL_RECOVERY_FRACTION, TACTICAL_SHARED_COOLDOWN_MS, tacticalBuffVisual, tacticalDefinition } from "../game/tacticalSupport.ts";
-import { AUTONOMOUS_FRONTIER_REPLAN_MS, MINION_ENGAGEMENT_RADIUS, MINION_PURSUIT_DISTANCE, MINION_TARGET_MEMORY_MS, computerWaveFormation, frontLineScreenGoal, minionExplorationCohort, retainCoreDiscovery, skirmishHeroAggroRadius, skirmishHeroShouldPursue, teamHasSpottedCore, triangulateCoreAfterTimeout } from "../game/skirmishAi.ts";
+import { AUTONOMOUS_FRONTIER_REPLAN_MS, MINION_ENGAGEMENT_RADIUS, MINION_PURSUIT_DISTANCE, MINION_TARGET_MEMORY_MS, computerWaveFormation, frontLineScreenGoal, marchStanceBehavior, minionExplorationCohort, retainCoreDiscovery, secretTunnelCoreEntryGoal, skirmishHeroAggroRadius, skirmishHeroShouldPursue, teamHasSpottedCore, triangulateCoreAfterTimeout } from "../game/skirmishAi.ts";
 import { ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, REINFORCEMENT_MINION_CAP, canReserveElite, createEliteDeploymentState, reinforcementFormation, withReservedElite } from "../game/eliteMinions.ts";
 import { COMPUTER_CREDIT_MULTIPLIER, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, INSTALLATION_REWARD_RATE, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS, creditedAmount, installationKillCredits } from "../game/skirmishEconomy.ts";
-import { SECRET_TUNNEL_ASSAULT_SECONDS, SECRET_TUNNEL_MATCH_MS, SECRET_TUNNEL_PREPARE_MS, SECRET_TUNNEL_PREPARE_SECONDS, TUNNEL_ACCESS, allocateSecretTunnelWave, canTraverseSecretTunnel, canTraverseSecretTunnelInPhase, chooseSecretTunnelRoute, createSecretTunnelOverlay, digSecretTunnelTile, evaluateSecretTunnelConnections, resolveSecretTunnelPreparation, resolveSecretTunnelTimeout, sealSecretTunnelTileForTeam, secretTunnelPhaseAt, secretTunnelTileAt, secretTunnelTileViewForTeam, selectSecretTunnelContact, shareSecretTunnelBackbone } from "../game/secretTunnelRules.ts";
+import { SECRET_TUNNEL_ASSAULT_SECONDS, SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER, SECRET_TUNNEL_MATCH_MS, SECRET_TUNNEL_PREPARE_MS, SECRET_TUNNEL_PREPARE_SECONDS, SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER, TUNNEL_ACCESS, allocateSecretTunnelWave, canTraverseSecretTunnel, canTraverseSecretTunnelInPhase, chooseSecretTunnelRoute, createSecretTunnelOverlay, digSecretTunnelTile, digSecretTunnelTileAndShareContacts, evaluateSecretTunnelConnections, resolveSecretTunnelPreparation, resolveSecretTunnelTimeout, sealSecretTunnelTileForTeam, secretTunnelPhaseAt, secretTunnelPrepareDuration, secretTunnelRushDigDamage, secretTunnelTileAt, secretTunnelTileViewForTeam, selectSecretTunnelContact, shareAdjacentSecretTunnelContacts, shareSecretTunnelBackbone } from "../game/secretTunnelRules.ts";
 
 const blankGrid = () =>
   Array.from({ length: 36 }, (_, y) =>
@@ -74,6 +74,20 @@ const reachableWithDigging = (grid, start, goal) => {
   return seen.has(`${goal.x},${goal.y}`);
 };
 
+const reachableWithoutDigging = (grid, start, goal) => {
+  const queue = [start], seen = new Set([`${start.x},${start.y}`]);
+  for (let index = 0; index < queue.length; index++) {
+    const point = queue[index];
+    for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      const x = point.x + dx, y = point.y + dy, key = `${x},${y}`, tile = grid[y]?.[x];
+      if (!tile || seen.has(key) || tile.type !== 0) continue;
+      seen.add(key);
+      queue.push({ x, y });
+    }
+  }
+  return seen.has(`${goal.x},${goal.y}`);
+};
+
 test("all twelve heroes have two meaningful choices at the slower levels 3, 6, and 9", () => {
   assert.deepEqual(TALENT_LEVELS, [3, 6, 9]);
   assert.equal(HERO_LEVELS.at(-1)?.level, 9);
@@ -115,13 +129,41 @@ test("all campaign chapters explain exact victory, defeat, and live progress", (
   );
 });
 
-test("all seven maps stay symmetric in spawn distance and remain dig-connectable", () => {
+test("all ten maps stay symmetric in spawn distance and remain dig-connectable", () => {
+  assert.equal(SECRET_TUNNEL_MAPS.length, 3);
+  assert.equal(OPEN_FRONT_BATTLE_MAPS.length, 7);
+  assert.equal(BATTLE_MAPS.length, 10);
+  assert.deepEqual(battleMapsForRuleset("secret-tunnel"), SECRET_TUNNEL_MAPS);
+  assert.deepEqual(battleMapsForRuleset("open-front"), OPEN_FRONT_BATTLE_MAPS);
+  assert.equal(defaultBattleMapForRuleset("secret-tunnel"), "secret-crossroads");
+  assert.equal(defaultBattleMapForRuleset("open-front"), "central-exchange");
   for (const map of BATTLE_MAPS) {
     const grid = blankGrid();
     applyBattleMapLayout(grid, map.id);
     assert.equal(map.spawns.blue.y, map.spawns.red.y, `${map.id} spawn row`);
     assert.equal(map.spawns.blue.x + map.spawns.red.x, 55, `${map.id} rotational spawn pair`);
     assert.equal(reachableWithDigging(grid, map.spawns.blue, map.spawns.red), true, `${map.id} connectivity`);
+  }
+});
+
+test("secret-tunnel maps provide public rooms without pre-opening a complete core route", () => {
+  for (const map of SECRET_TUNNEL_MAPS) {
+    const grid = blankGrid();
+    applyBattleMapLayout(grid, map.id);
+    const publicCells = grid.flat().filter((tile) => tile.type === 0).length - 9 * 9 * 2;
+    const oreCells = grid.flat().filter((tile) => tile.ore).length;
+    assert.ok(publicCells >= 30, `${map.id} needs meaningful pre-opened public space`);
+    assert.ok(oreCells >= 24, `${map.id} needs at least 24 ore-bearing walls`);
+    for (let y = 0; y < grid.length; y++)
+      for (let x = 0; x < grid[y].length; x++)
+        if (grid[y][x].ore)
+          assert.ok(grid[grid.length - 1 - y][grid[y].length - 1 - x].ore, `${map.id} ore field must be rotationally symmetric`);
+    assert.equal(
+      reachableWithoutDigging(grid, map.spawns.blue, map.spawns.red),
+      false,
+      `${map.id} must still require a secret tunnel`,
+    );
+    assert.equal(map.spawnPairs.length, 1, `${map.id} uses the readable horizontal core layout`);
   }
 });
 
@@ -161,7 +203,7 @@ test("computer scouts retain core intel and switch later waves to coordinated pr
     "escort", "escort", "breaker", "shooter",
   ]);
   assert.deepEqual(frontLineScreenGoal({ x: 40, y: 18 }, { x: 49, y: 18 }, "artillery"), { x: 43, y: 18 });
-  const sectors = battleExplorationSectors(BATTLE_MAPS[0], { x: 6, y: 18 });
+  const sectors = battleExplorationSectors(OPEN_FRONT_BATTLE_MAPS[0], { x: 6, y: 18 });
   assert.ok(sectors.some((point) => point.x === 45 && point.y === 29));
   assert.ok(sectors.some((point) => point.x === 28 && point.y === 30));
 });
@@ -194,10 +236,73 @@ test("uncommanded squads advance to the reachable frontier and heroes keep a rea
   assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 26, aggroRadius, locked: true }), true);
   assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 26, aggroRadius, locked: false }), false);
   assert.equal(skirmishHeroShouldPursue({ directDistance: 20, routeDistance: 29, aggroRadius, locked: true }), false);
+  assert.equal(skirmishHeroShouldPursue({
+    directDistance: 4,
+    routeDistance: null,
+    aggroRadius,
+    locked: true,
+    forced: true,
+    targetAccessible: false,
+  }), false);
   assert.equal(triangulateCoreAfterTimeout(false, 23_999), false);
   assert.equal(triangulateCoreAfterTimeout(false, 24_000), true);
   assert.equal(triangulateCoreAfterTimeout(true, 0), true);
   assert.equal(AUTONOMOUS_FRONTIER_REPLAN_MS, 3500);
+});
+
+test("route cursor, tunnel core goals, and open-front stances preserve an offensive objective", () => {
+  const cells = [{ x: 2, y: 3 }, { x: 3, y: 3 }, { x: 4, y: 3 }];
+  assert.deepEqual(advanceRouteCursor({ x: 2, y: 3 }, cells, 0), {
+    index: 2,
+    goal: { x: 4, y: 3 },
+    atEnd: false,
+  });
+  assert.deepEqual(advanceRouteCursor({ x: 4, y: 3 }, cells, 1), {
+    index: 2,
+    goal: { x: 4, y: 3 },
+    atEnd: true,
+  });
+  const longRoute = Array.from({ length: 12 }, (_, x) => ({ x, y: 4 }));
+  assert.deepEqual(advanceRouteCursor({ x: 8, y: 4 }, longRoute, 1), {
+    index: 10,
+    goal: { x: 10, y: 4 },
+    atEnd: false,
+  });
+  const rejoin = forwardRouteRejoin(
+    { x: 8, y: 5 },
+    longRoute,
+    5,
+    (x, y) => x >= 0 && x < 12 && y >= 4 && y <= 5,
+  );
+  assert.ok(rejoin.index >= 8, "a sidestepped minion must rejoin only ahead of its cursor");
+  assert.deepEqual(rejoin.plan?.goal, { x: rejoin.index, y: 4 });
+
+  const core = { x: 48, y: 18 },
+    upperEntry = secretTunnelCoreEntryGoal(core, 0),
+    lowerEntry = secretTunnelCoreEntryGoal(core, 1);
+  assert.deepEqual(upperEntry, { x: 48, y: 16 });
+  assert.deepEqual(lowerEntry, { x: 48, y: 20 });
+  assert.ok(Math.max(Math.abs(upperEntry.x - core.x), Math.abs(upperEntry.y - core.y)) <= 4);
+  assert.ok(Math.max(Math.abs(lowerEntry.x - core.x), Math.abs(lowerEntry.y - core.y)) <= 4);
+
+  assert.deepEqual(marchStanceBehavior("assault"), {
+    pursuitRadius: 7,
+    captureLeashRadius: 0,
+    continuesToCore: true,
+    holdsAtRally: false,
+  });
+  assert.deepEqual(marchStanceBehavior("guard"), {
+    pursuitRadius: 0,
+    captureLeashRadius: 0,
+    continuesToCore: false,
+    holdsAtRally: true,
+  });
+  assert.deepEqual(marchStanceBehavior("capture"), {
+    pursuitRadius: 6,
+    captureLeashRadius: 5,
+    continuesToCore: false,
+    holdsAtRally: true,
+  });
 });
 
 test("each tactical map owns a distinct terrain signature", () => {
@@ -334,6 +439,13 @@ test("campaign 4 companion recovers from occupied corridors before becoming perm
 
 test("Yoo Seung-cheon radial drill breaks all eight neighboring cells", () => {
   const basic = radialDrillOffsets(1), expanded = radialDrillOffsets(2);
+  assert.equal(DRILL_RANGE_MULTIPLIER, 1.5);
+  assert.equal(DRILL_ACTION_LOCK_MS, 120);
+  assert.equal(expandedDrillReach(1), 2);
+  assert.equal(expandedDrillReach(4), 6);
+  assert.equal(expandedDrillReach(5), 8);
+  assert.equal(expandedDrillReach(9), 14);
+  assert.throws(() => expandedDrillReach(-1), RangeError);
   assert.equal(basic.length, 8);
   assert.equal(new Set(basic.map(({ x, y }) => `${x},${y}`)).size, 8);
   assert.ok(basic.some(({ x, y }) => x === 1 && y === 1));
@@ -397,7 +509,9 @@ test("the last edited march route avoids the other route in either A/B order", (
   const isOpen = (x, y) => openCells.has(`${x},${y}`),
     start = { x: 1, y: 3 },
     goal = { x: 9, y: 3 },
-    routeA = diverseRouteToGoal(start, goal, isOpen),
+    routeA = diverseRouteToGoal(start, goal, isOpen, [], {
+      preferredVerticalDirection: -1,
+    }),
     routeB = diverseRouteToGoal(start, goal, isOpen, routeA.cells, {
       sharedStartRadius: 1,
       sharedGoalRadius: 1,
@@ -461,6 +575,35 @@ test("a newly edited route prefers the far opposite side over a nearby parallel 
   assert.ok(route.separationDistance >= 3);
 });
 
+test("B uses the lower corridor when A and B share the exact destination", () => {
+  const openCells = new Set(["1,5", "2,5", "10,5", "11,5"]);
+  for (let x = 2; x <= 10; x++) {
+    openCells.add(`${x},2`);
+    openCells.add(`${x},8`);
+  }
+  for (const y of [2, 3, 4, 6, 7, 8]) {
+    openCells.add(`2,${y}`);
+    openCells.add(`10,${y}`);
+  }
+  const start = { x: 1, y: 5 },
+    goal = { x: 11, y: 5 },
+    isOpen = (x, y) => openCells.has(`${x},${y}`),
+    routeA = diverseRouteToGoal(start, goal, isOpen, [], {
+      preferredVerticalDirection: -1,
+    }),
+    routeB = diverseRouteToGoal(start, goal, isOpen, routeA.cells, {
+      sharedStartRadius: 1,
+      sharedGoalRadius: 1,
+      hardAvoidRadius: 2,
+      preferredVerticalDirection: 1,
+    });
+  assert.ok(routeA);
+  assert.ok(routeB);
+  assert.equal(routeB.pathMode, "flank");
+  assert.ok(routeB.cells.some(({ y }) => y === 8), "B must prefer the lower screen corridor");
+  assert.ok(!routeB.cells.some(({ y }) => y === 2), "B must not mirror A through the upper corridor");
+});
+
 test("campaign 3 arena healing is capped at two reduced uses", () => {
   assert.equal(campaign3ArenaHeal(0, 350), 35);
   assert.equal(campaign3ArenaHeal(1, 350), 35);
@@ -506,8 +649,8 @@ test("attack facilities can touch and pay a capped local density surcharge", () 
   assert.equal(buildPlacementCost(100, true, 11, 10, attack), 100);
 });
 
-test("repair pack restores ninety percent and core regeneration requires safety", () => {
-  assert.equal(emergencyRepairAmount(200), 180);
+test("repair pack fully restores health and core regeneration requires safety", () => {
+  assert.equal(emergencyRepairAmount(200), 200);
   assert.equal(coreRegenAmount(200, 1000, 4, CORE_REGEN_DELAY_MS - 1), 0);
   assert.equal(coreRegenAmount(200, 1000, 5, CORE_REGEN_DELAY_MS), 0);
   assert.equal(coreRegenAmount(200, 1000, 4, CORE_REGEN_DELAY_MS), 12);
@@ -578,6 +721,7 @@ test("all factions share tactical costs and cooldown but keep distinct support b
     assert.equal(tacticalDefinition(faction, "area").cost, 150);
     assert.equal(tacticalDefinition(faction, "recovery").cost, 130);
     assert.equal(tacticalDefinition(faction, "reinforce").cost, 180);
+    assert.match(tacticalDefinition(faction, "recovery").description, /영웅·현재 진군대/);
   }
   assert.equal(TACTICAL_RECOVERY_FRACTION, 0.03);
   assert.equal(ELITE_TACTICAL_EFFECT_SCALE, 0.7);
@@ -758,12 +902,65 @@ test("secret tunnel overlays keep each team's excavation, passage, and visibilit
   assert.equal(dig.tile.excavatedBy, TUNNEL_ACCESS.shared);
   assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), true);
   assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "red"), true);
-  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "prepare"), false);
-  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "prepare"), false);
-  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "assault"), false);
-  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "assault"), false);
-  assert.equal(dig.tile.sharedBackbone, false, "a raw contact stays sealed until one route is selected");
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "prepare"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "prepare"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "assault"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "assault"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "blue", "finished"), false);
+  assert.equal(canTraverseSecretTunnelInPhase(overlay, { x: 1, y: 0 }, "red", "finished"), false);
+  assert.equal(dig.tile.sharedBackbone, false, "a raw contact is shared without becoming the selected backbone");
   assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "blue").visibility, "shared");
+});
+
+test("completed orthogonal enemy tunnels become shared while diagonal or partial contact stays private", () => {
+  let overlay = createSecretTunnelOverlay({
+    width: 3,
+    height: 3,
+    initialAccessAt: ({ x, y }) =>
+      x === 0 && y === 1 ? TUNNEL_ACCESS.blue :
+        x === 1 && y === 1 ? TUNNEL_ACCESS.red : TUNNEL_ACCESS.none,
+  });
+  const adjacent = shareAdjacentSecretTunnelContacts(overlay, { x: 0, y: 1 });
+  assert.deepEqual(adjacent.changed, [{ x: 0, y: 1 }, { x: 1, y: 1 }]);
+  assert.equal(secretTunnelTileAt(adjacent.overlay, { x: 0, y: 1 })?.access, TUNNEL_ACCESS.shared);
+  assert.equal(secretTunnelTileAt(adjacent.overlay, { x: 1, y: 1 })?.access, TUNNEL_ACCESS.shared);
+
+  overlay = createSecretTunnelOverlay({
+    width: 3,
+    height: 3,
+    initialAccessAt: ({ x, y }) =>
+      x === 0 && y === 0 ? TUNNEL_ACCESS.blue :
+        x === 1 && y === 1 ? TUNNEL_ACCESS.red : TUNNEL_ACCESS.none,
+  });
+  assert.equal(shareAdjacentSecretTunnelContacts(overlay, { x: 0, y: 0 }).changed.length, 0);
+
+  overlay = createSecretTunnelOverlay({
+    width: 4,
+    height: 1,
+    durability: 2,
+    initialAccessAt: ({ x }) =>
+      x === 0 ? TUNNEL_ACCESS.blue : x === 2 ? TUNNEL_ACCESS.red : TUNNEL_ACCESS.none,
+  });
+  const contact = digSecretTunnelTileAndShareContacts(overlay, { x: 1, y: 0 }, "blue", 2);
+  assert.equal(contact.becameShared, true);
+  assert.equal(contact.tile.access, TUNNEL_ACCESS.shared);
+  assert.equal(secretTunnelTileAt(contact.overlay, { x: 2, y: 0 })?.access, TUNNEL_ACCESS.shared);
+  assert.equal(canTraverseSecretTunnel(contact.overlay, { x: 2, y: 0 }, "blue"), true);
+
+  const hidden = secretTunnelTileViewForTeam(overlay, { x: 2, y: 0 }, "blue"),
+    revealed = secretTunnelTileViewForTeam(overlay, { x: 2, y: 0 }, "blue", true);
+  assert.equal(hidden.visibility, "hidden");
+  assert.deepEqual(revealed, {
+    visibility: "opponent",
+    visibleAccess: TUNNEL_ACCESS.red,
+    durability: null,
+    maxDurability: null,
+    canTraverse: false,
+  });
+
+  const partial = digSecretTunnelTile(overlay, { x: 3, y: 0 }, "red", 1);
+  assert.equal(partial.opened, false);
+  assert.equal(shareAdjacentSecretTunnelContacts(partial.overlay, { x: 3, y: 0 }).changed.length, 0);
 });
 
 test("secret tunnel contact shares only the deterministic core-to-contact backbone", () => {
@@ -837,9 +1034,11 @@ test("secret tunnel contact selection is deterministic and defers backbone shari
   const shared = shareSecretTunnelBackbone(overlay, cores, selection.contact);
   assert.equal(shared.connected, true);
   assert.equal(secretTunnelTileAt(shared.overlay, { x: 1, y: 1 })?.access, TUNNEL_ACCESS.shared);
-  assert.equal(secretTunnelTileAt(shared.overlay, { x: 3, y: 2 })?.access, TUNNEL_ACCESS.blue,
-    "an independent contact returns to its first owner instead of opening a second route");
+  assert.equal(secretTunnelTileAt(shared.overlay, { x: 3, y: 2 })?.access, TUNNEL_ACCESS.shared,
+    "an independent contact remains shared without joining the selected backbone");
   assert.equal(secretTunnelTileAt(shared.overlay, { x: 3, y: 2 })?.sharedBackbone, false);
+  assert.equal(canTraverseSecretTunnelInPhase(shared.overlay, { x: 3, y: 2 }, "blue", "assault"), true);
+  assert.equal(canTraverseSecretTunnelInPhase(shared.overlay, { x: 3, y: 2 }, "red", "assault"), true);
   assert.equal(secretTunnelTileAt(shared.overlay, { x: 2, y: 2 })?.access, TUNNEL_ACCESS.blue);
   assert.equal(secretTunnelTileAt(shared.overlay, { x: 4, y: 2 })?.access, TUNNEL_ACCESS.red);
 
@@ -854,7 +1053,31 @@ test("secret tunnel contact selection is deterministic and defers backbone shari
   }), null, "shared access without two-sided excavation is not a contact");
 });
 
-test("secret tunnel sealing removes only the acting team and protects both cores", () => {
+test("secret tunnel core surroundings keep the full 9x9 open footprint on every dedicated map", () => {
+  for (const map of SECRET_TUNNEL_MAPS) {
+    const grid = blankGrid();
+    applyBattleMapLayout(grid, map.id);
+    for (const core of [map.spawns.blue, map.spawns.red])
+      for (let y = core.y - 4; y <= core.y + 4; y++)
+        for (let x = core.x - 4; x <= core.x + 4; x++)
+          assert.equal(grid[y]?.[x]?.type, 0, `${map.id} opens core area ${x},${y}`);
+  }
+});
+
+test("a shared core area is traversable by both teams without becoming a special backbone", () => {
+  const overlay = createSecretTunnelOverlay({
+    width: 9,
+    height: 9,
+    initialAccessAt: () => TUNNEL_ACCESS.shared,
+  });
+  for (const point of [{ x: 0, y: 0 }, { x: 4, y: 4 }, { x: 8, y: 8 }]) {
+    assert.equal(canTraverseSecretTunnelInPhase(overlay, point, "blue", "prepare"), true);
+    assert.equal(canTraverseSecretTunnelInPhase(overlay, point, "red", "prepare"), true);
+    assert.equal(secretTunnelTileAt(overlay, point)?.sharedBackbone, false);
+  }
+});
+
+test("secret tunnel sealing preserves permanent shared infrastructure and protects both cores", () => {
   const cores = { blue: { x: 0, y: 0 }, red: { x: 3, y: 0 } };
   let overlay = createSecretTunnelOverlay({
     width: 4,
@@ -868,17 +1091,17 @@ test("secret tunnel sealing removes only the acting team and protects both cores
   });
 
   const sharedSeal = sealSecretTunnelTileForTeam(overlay, { x: 1, y: 0 }, "blue", cores);
-  overlay = sharedSeal.overlay;
-  assert.equal(sharedSeal.sealed, true);
-  assert.equal(sharedSeal.blockedReason, null);
+  assert.equal(sharedSeal.overlay, overlay, "shared infrastructure remains immutable");
+  assert.equal(sharedSeal.sealed, false);
+  assert.equal(sharedSeal.blockedReason, "shared");
   assert.equal(sharedSeal.previousAccess, TUNNEL_ACCESS.shared);
-  assert.equal(sharedSeal.remainingAccess, TUNNEL_ACCESS.red);
-  assert.equal(sharedSeal.tile.excavatedBy, TUNNEL_ACCESS.red);
-  assert.equal(sharedSeal.tile.durability.blue, 3);
+  assert.equal(sharedSeal.remainingAccess, TUNNEL_ACCESS.shared);
+  assert.equal(sharedSeal.tile.excavatedBy, TUNNEL_ACCESS.shared);
+  assert.equal(sharedSeal.tile.durability.blue, 0);
   assert.equal(sharedSeal.tile.durability.red, 0, "opponent opening stays intact");
-  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), false);
+  assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "blue"), true);
   assert.equal(canTraverseSecretTunnel(overlay, { x: 1, y: 0 }, "red"), true);
-  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "red").visibility, "private");
+  assert.equal(secretTunnelTileViewForTeam(overlay, { x: 1, y: 0 }, "red").visibility, "shared");
 
   overlay = digSecretTunnelTile(overlay, { x: 2, y: 0 }, "blue", 1).overlay;
   overlay = digSecretTunnelTile(overlay, { x: 2, y: 0 }, "red", 1).overlay;
@@ -949,14 +1172,23 @@ test("secret tunnel preparation accepts direct or shared contact routes and isol
 });
 
 test("secret tunnel match timing, timeout judgment, and A/B allocations are deterministic", () => {
-  assert.equal(SECRET_TUNNEL_PREPARE_SECONDS, 120);
+  assert.equal(SECRET_TUNNEL_PREPARE_SECONDS, 30);
   assert.equal(SECRET_TUNNEL_ASSAULT_SECONDS, 240);
-  assert.equal(SECRET_TUNNEL_PREPARE_MS, 120000);
-  assert.equal(SECRET_TUNNEL_MATCH_MS, 360000);
-  assert.equal(secretTunnelPhaseAt(119999), "prepare");
-  assert.equal(secretTunnelPhaseAt(120000), "assault");
-  assert.equal(secretTunnelPhaseAt(359999), "assault");
-  assert.equal(secretTunnelPhaseAt(360000), "finished");
+  assert.equal(SECRET_TUNNEL_PREPARE_MS, 30000);
+  assert.equal(SECRET_TUNNEL_MATCH_MS, 270000);
+  assert.equal(SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER, 2.25);
+  assert.equal(SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER, 0.25);
+  assert.equal(secretTunnelPrepareDuration(95), 42);
+  assert.equal(secretTunnelPrepareDuration(135), 60);
+  assert.equal(secretTunnelPrepareDuration(90), 40);
+  assert.throws(() => secretTunnelPrepareDuration(-1), RangeError);
+  assert.equal(secretTunnelPhaseAt(29999), "prepare");
+  assert.equal(secretTunnelPhaseAt(30000), "assault");
+  assert.equal(secretTunnelPhaseAt(269999), "assault");
+  assert.equal(secretTunnelPhaseAt(270000), "finished");
+  assert.equal(secretTunnelRushDigDamage(6, 1), 6);
+  assert.equal(secretTunnelRushDigDamage(0, 4), 4);
+  assert.throws(() => secretTunnelRushDigDamage(-1, 1), RangeError);
 
   assert.deepEqual(resolveSecretTunnelTimeout({
     blue: { coreHp: 1, shieldHp: 0 },
