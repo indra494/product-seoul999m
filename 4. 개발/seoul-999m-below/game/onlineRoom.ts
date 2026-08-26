@@ -71,6 +71,7 @@ export type OnlineBattleSnapshot = {
   sequence: number;
   issuedAt: number;
   lastAppliedCommandSequence?: number;
+  lastAppliedClientSequences?: Partial<Record<string, number>>;
   phase?: OnlineBattlePhase;
   phaseTimeLeftMs?: number;
   phaseEndsAt?: number;
@@ -142,9 +143,12 @@ export type OnlineBattleSnapshot = {
 export type OnlineBattleCommand = {
   sequence: number;
   playerId: string;
-  type: "move" | "attack" | "skill" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
+  type: "move" | "attack" | "skill" | "dig" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
+  clientSequence?: number;
   x?: number;
   y?: number;
+  sourceX?: number;
+  sourceY?: number;
   dx?: number;
   dy?: number;
   drillWidthBonus?: number;
@@ -177,7 +181,7 @@ export type RoomJoinRequest = {
 export type RoomClientIdentity = { playerId: string; token: string };
 
 export const ONLINE_SNAPSHOT_INTERVAL_MS = 250;
-export const ONLINE_REMOTE_INTERPOLATION_MS = 300;
+export const ONLINE_REMOTE_INTERPOLATION_MS = 180;
 export const ONLINE_SOCKET_HEARTBEAT_MS = 8_000;
 export const ONLINE_SOCKET_RECONNECT_MAX_MS = 5_000;
 
@@ -202,6 +206,25 @@ export const shouldApplyAuthoritativeHeroPosition = (
   snapshotPlayerId: string,
   localPlayerId: string,
 ) => isHost || snapshotPlayerId !== localPlayerId;
+
+export const isValidOnlineDigCommand = (
+  command: Pick<OnlineBattleCommand, "type" | "clientSequence" | "x" | "y" | "sourceX" | "sourceY">,
+) => command.type === "dig" &&
+  Number.isSafeInteger(command.clientSequence) &&
+  (command.clientSequence ?? 0) > 0 &&
+  Number.isSafeInteger(command.x) &&
+  Number.isSafeInteger(command.y) &&
+  Number.isSafeInteger(command.sourceX) &&
+  Number.isSafeInteger(command.sourceY) &&
+  Math.max(
+    Math.abs((command.x ?? 0) - (command.sourceX ?? 0)),
+    Math.abs((command.y ?? 0) - (command.sourceY ?? 0)),
+  ) === 1;
+
+export const shouldPreserveOnlineTerrainPrediction = (
+  predictionClientSequence: number,
+  lastAppliedClientSequence = 0,
+) => predictionClientSequence > lastAppliedClientSequence;
 
 export const newestOnlineRoomView = (
   current: OnlineRoomView | null,

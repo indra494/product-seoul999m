@@ -9,6 +9,8 @@ export const COMPUTER_CREDIT_MULTIPLIER = 1.08;
 export const installationKillCredits = (cost: number) =>
   Math.max(INSTALLATION_REWARD_MIN, Math.round(cost * INSTALLATION_REWARD_RATE));
 
-export const creditedAmount = (amount: number, computerTeam: boolean) =>
-  Math.round(amount * (computerTeam ? COMPUTER_CREDIT_MULTIPLIER : 1));
-
+export const creditedAmount = (
+  amount: number,
+  computerTeam: boolean,
+  computerMultiplier = COMPUTER_CREDIT_MULTIPLIER,
+) => Math.round(amount * (computerTeam ? computerMultiplier : 1));

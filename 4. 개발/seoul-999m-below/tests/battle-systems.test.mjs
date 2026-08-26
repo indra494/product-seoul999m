@@ -16,12 +16,14 @@ import { CAMPAIGN_CINEMATICS, CAMPAIGN_PROLOGUE_STORAGE_KEY, CAMPAIGN_PROLOGUE_V
 import { advanceRouteCursor, attackPositionCandidates, diverseRouteToGoal, forwardRouteRejoin, reachableFrontierGoal, shortestRouteToAny, stitchRoutePoints } from "../game/gridNavigation.ts";
 import { EMERGENCY_BREACH_DELAY_MS, canEmergencyBreach } from "../game/minionBreachRules.ts";
 import { MINION_COMBAT_SLOT_MEMORY_MS, MINION_FLANK_REPLAN_MS, chooseCombatApproachSlot, minionCombatDetourAllowance } from "../game/minionCoordination.ts";
-import { ONLINE_REMOTE_INTERPOLATION_MS, ONLINE_SNAPSHOT_INTERVAL_MS, ONLINE_SOCKET_HEARTBEAT_MS, ONLINE_SOCKET_RECONNECT_MAX_MS, newestOnlineRoomView, opponentTeam, shouldApplyAuthoritativeHeroPosition } from "../game/onlineRoom.ts";
+import { ONLINE_REMOTE_INTERPOLATION_MS, ONLINE_SNAPSHOT_INTERVAL_MS, ONLINE_SOCKET_HEARTBEAT_MS, ONLINE_SOCKET_RECONNECT_MAX_MS, isValidOnlineDigCommand, newestOnlineRoomView, opponentTeam, shouldApplyAuthoritativeHeroPosition, shouldPreserveOnlineTerrainPrediction } from "../game/onlineRoom.ts";
 import { guaranteedMinionLevelForWave, minionResearchReady, minionResearchUnlockWave, nextMinionResearch, teamMinionLevels } from "../game/minionResearch.ts";
 import { ELITE_RECOVERY_SCALE, ELITE_TACTICAL_EFFECT_SCALE, TACTICAL_RECOVERY_FRACTION, TACTICAL_SHARED_COOLDOWN_MS, tacticalBuffVisual, tacticalDefinition } from "../game/tacticalSupport.ts";
 import { AUTONOMOUS_FRONTIER_REPLAN_MS, MINION_ENGAGEMENT_RADIUS, MINION_PURSUIT_DISTANCE, MINION_TARGET_MEMORY_MS, computerWaveFormation, frontLineScreenGoal, marchStanceBehavior, minionExplorationCohort, retainCoreDiscovery, secretTunnelCoreEntryGoal, skirmishHeroAggroRadius, skirmishHeroShouldPursue, teamHasSpottedCore, triangulateCoreAfterTimeout } from "../game/skirmishAi.ts";
 import { ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, REINFORCEMENT_MINION_CAP, canReserveElite, createEliteDeploymentState, reinforcementFormation, withReservedElite } from "../game/eliteMinions.ts";
 import { COMPUTER_CREDIT_MULTIPLIER, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, INSTALLATION_REWARD_RATE, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS, creditedAmount, installationKillCredits } from "../game/skirmishEconomy.ts";
+import { minimapDragAnchor, minimapDragTarget } from "../game/minimapCamera.ts";
+import { SKIRMISH_DIFFICULTIES, resolveSkirmishDifficulty } from "../game/skirmishDifficulty.ts";
 import { SECRET_TUNNEL_ASSAULT_SECONDS, SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER, SECRET_TUNNEL_MATCH_MS, SECRET_TUNNEL_PREPARE_MS, SECRET_TUNNEL_PREPARE_SECONDS, SECRET_TUNNEL_PREPARE_SPEED_MULTIPLIER, TUNNEL_ACCESS, allocateSecretTunnelWave, canTraverseSecretTunnel, canTraverseSecretTunnelInPhase, chooseSecretTunnelRoute, createSecretTunnelOverlay, digSecretTunnelTile, digSecretTunnelTileAndShareContacts, evaluateSecretTunnelConnections, resolveSecretTunnelPreparation, resolveSecretTunnelTimeout, sealSecretTunnelTileForTeam, secretTunnelPhaseAt, secretTunnelPrepareDuration, secretTunnelRushDigDamage, secretTunnelTileAt, secretTunnelTileViewForTeam, selectSecretTunnelContact, shareAdjacentSecretTunnelContacts, shareSecretTunnelBackbone } from "../game/secretTunnelRules.ts";
 
 const blankGrid = () =>
@@ -690,13 +692,24 @@ test("online guests predict their own hero locally while the host remains author
   assert.equal(shouldApplyAuthoritativeHeroPosition(false, "local-player", "local-player"), false);
   assert.equal(shouldApplyAuthoritativeHeroPosition(false, "remote-player", "local-player"), true);
   assert.equal(shouldApplyAuthoritativeHeroPosition(true, "local-player", "local-player"), true);
+  assert.equal(shouldPreserveOnlineTerrainPrediction(4, 3), true);
+  assert.equal(shouldPreserveOnlineTerrainPrediction(4, 4), false);
+  assert.equal(isValidOnlineDigCommand({
+    type: "dig", clientSequence: 7, sourceX: 10, sourceY: 10, x: 11, y: 11,
+  }), true);
+  assert.equal(isValidOnlineDigCommand({
+    type: "dig", clientSequence: 8, sourceX: 10, sourceY: 10, x: 12, y: 10,
+  }), false);
+  assert.equal(isValidOnlineDigCommand({
+    type: "dig", clientSequence: 0, sourceX: 10, sourceY: 10, x: 11, y: 10,
+  }), false);
 });
 
 test("online friendly matches use WebSocket heartbeat, host snapshots, and reject stale room revisions", () => {
   assert.equal(ONLINE_SOCKET_HEARTBEAT_MS, 8000);
   assert.equal(ONLINE_SOCKET_RECONNECT_MAX_MS, 5000);
   assert.equal(ONLINE_SNAPSHOT_INTERVAL_MS, 250);
-  assert.equal(ONLINE_REMOTE_INTERPOLATION_MS, 300);
+  assert.equal(ONLINE_REMOTE_INTERPOLATION_MS, 180);
   const current = { code: "ABC123", revision: 8 }, stale = { code: "ABC123", revision: 7 }, fresh = { code: "ABC123", revision: 9 };
   assert.equal(newestOnlineRoomView(current, stale), current);
   assert.equal(newestOnlineRoomView(current, fresh), fresh);
@@ -743,7 +756,7 @@ test("active tactical buffs expose readable faction light and role badges", () =
   assert.notEqual(tacticalBuffVisual("human", "defense").auraColor, tacticalBuffVisual("bugborn", "defense").auraColor);
 });
 
-test("skirmish economy slows spam while preserving fair computer combat stats", () => {
+test("skirmish economy slows spam while preserving the hard computer bonus", () => {
   assert.equal(SKIRMISH_STARTING_CREDITS, 120);
   assert.deepEqual([MINION_KILL_CREDITS, ELITE_KILL_CREDITS, HERO_KILL_CREDITS], [8, 30, 35]);
   assert.equal(INSTALLATION_REWARD_RATE, 0.25);
@@ -751,6 +764,47 @@ test("skirmish economy slows spam while preserving fair computer combat stats", 
   assert.equal(installationKillCredits(200), 50);
   assert.equal(COMPUTER_CREDIT_MULTIPLIER, 1.08);
   assert.equal(creditedAmount(35, true), 38);
+});
+
+test("computer skirmish defaults to easy while hard preserves the former pressure", () => {
+  assert.equal(resolveSkirmishDifficulty(), "easy");
+  assert.deepEqual(
+    {
+      damage: SKIRMISH_DIFFICULTIES.easy.enemyDamage,
+      credits: SKIRMISH_DIFFICULTIES.easy.enemyCreditMultiplier,
+      construction: SKIRMISH_DIFFICULTIES.easy.enemyConstructionRate,
+    },
+    { damage: 0.88, credits: 0.92, construction: 0.82 },
+  );
+  assert.deepEqual(
+    {
+      damage: SKIRMISH_DIFFICULTIES.hard.enemyDamage,
+      credits: SKIRMISH_DIFFICULTIES.hard.enemyCreditMultiplier,
+      construction: SKIRMISH_DIFFICULTIES.hard.enemyConstructionRate,
+    },
+    { damage: 1, credits: 1.08, construction: 1 },
+  );
+  assert.equal(creditedAmount(35, true, SKIRMISH_DIFFICULTIES.easy.enemyCreditMultiplier), 32);
+});
+
+test("minimap dragging keeps the grabbed viewport offset and direct clicks stay exact", () => {
+  const anchor = minimapDragAnchor(
+    { x: 0.65, y: 0.55 },
+    { x: 0.75, y: 0.5 },
+    { width: 0.4, height: 0.3 },
+  );
+  assert.ok(Math.abs(anchor.x + 0.1) < 1e-9);
+  assert.ok(Math.abs(anchor.y - 0.05) < 1e-9);
+  const dragged = minimapDragTarget({ x: 0.45, y: 0.4 }, anchor);
+  assert.ok(Math.abs(dragged.x - 0.55) < 1e-9);
+  assert.ok(Math.abs(dragged.y - 0.35) < 1e-9);
+  const direct = minimapDragAnchor(
+    { x: 0.08, y: 0.1 },
+    { x: 0.75, y: 0.5 },
+    { width: 0.4, height: 0.3 },
+  );
+  assert.deepEqual(direct, { x: 0, y: 0 });
+  assert.deepEqual(minimapDragTarget({ x: 0.08, y: 0.1 }, direct), { x: 0.08, y: 0.1 });
 });
 
 test("each faction owns one rare elite, one persistent support, and three attack choices", () => {

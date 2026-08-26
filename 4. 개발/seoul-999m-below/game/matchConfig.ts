@@ -1,4 +1,8 @@
 import { HEROES, type FactionId } from "./content";
+import {
+  resolveSkirmishDifficulty,
+  type SkirmishDifficulty,
+} from "./skirmishDifficulty";
 
 export type TeamSize = 1 | 2;
 export type MatchKind = "computer" | "online";
@@ -37,6 +41,7 @@ export type TeamConfig = {
 
 export type MatchConfig = {
   kind: MatchKind;
+  difficulty?: SkirmishDifficulty;
   ruleset: BattleRuleset;
   teamSize: TeamSize;
   mapId: BattleMapId;
@@ -81,6 +86,7 @@ export const validateMatchConfig = (config: MatchConfig) => {
 
 export const createComputerMatch = (input: {
   ruleset?: BattleRuleset;
+  difficulty?: SkirmishDifficulty;
   teamSize: TeamSize;
   mapId: BattleMapId;
   playerHeroId: string;
@@ -109,6 +115,7 @@ export const createComputerMatch = (input: {
 
   const config: MatchConfig = {
     kind: "computer",
+    difficulty: resolveSkirmishDifficulty(input.difficulty),
     ruleset: resolveBattleRuleset(input.ruleset),
     teamSize: input.teamSize,
     mapId: input.mapId,

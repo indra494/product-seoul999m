@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><title>서울 지하 999M 3분 플레이 영상</title>
+<style>html,body{margin:0;overflow:hidden;background:#000}canvas{display:block;width:1920px;height:1080px}</style></head>
+<body><canvas id="demo" width="1920" height="1080"></canvas><script>
+const W=1920,H=1080,FPS=30;
+const ROOT="../../../";
+const SOURCES={
+  opening:ROOT+"3. 설계/영상/프롤로그/v12/seoul-999m-opening-v12.mp4",
+  first:ROOT+"5. 오픈/영상/raw/컴퓨터대전첫번째동영상.mp4",
+  fourth:ROOT+"5. 오픈/영상/raw/컴퓨터대전네번째영상.mp4",
+  character:ROOT+"5. 오픈/영상/raw/캐릭터별영상.mp4",
+  campaign:ROOT+"5. 오픈/영상/raw/캠페인.mp4",
+  online:ROOT+"5. 오픈/영상/raw/온라인1대1.mp4"
+};
+const VO_CUES=[
+  {stem:"intro",start:1.2},{stem:"prep",start:21},{stem:"advance",start:34},
+  {stem:"battle",start:52},{stem:"victory",start:79},{stem:"heroes",start:107},
+  {stem:"campaign",start:121},{stem:"online",start:154},{stem:"ending",start:169}
+];
+const LOGO=ROOT+"3. 설계/영상/프롤로그/v12/images/logo.png";
+const clips=[
+  {source:"first",start:3,end:8,audio:.62,section:"게임 소개"},
+  {source:"first",start:27,end:35,audio:.62,section:"게임 소개"},
+  {source:"first",start:38,end:45,audio:.62,section:"게임 소개"},
+  {source:"first",start:45,end:57,audio:.62,section:"실제 플레이"},
+  {source:"first",start:57,end:75,audio:.62,section:"실제 플레이"},
+  {source:"fourth",start:152,end:176,audio:.72,section:"실제 플레이"},
+  {source:"fourth",start:204,end:224,audio:.72,section:"실제 플레이"},
+  {source:"fourth",start:284,end:296,audio:.72,section:"실제 플레이"},
+  {source:"character",start:162,end:166,audio:.72,section:"핵심 기능"},
+  {source:"character",start:238,end:242,audio:.72,section:"핵심 기능"},
+  {source:"character",start:298,end:302,audio:.72,section:"핵심 기능"},
+  {source:"campaign",start:.5,end:5.5,audio:.62,section:"핵심 기능"},
+  {source:"campaign",start:5.5,end:11.5,audio:.62,section:"핵심 기능"},
+  {source:"campaign",start:11.5,end:18.5,audio:.62,section:"핵심 기능"},
+  {source:"campaign",start:18.5,end:31.5,audio:.72,section:"핵심 기능"},
+  {source:"campaign",start:94,end:98,audio:.72,section:"핵심 기능"},
+  {source:"online",start:5,end:11,audio:.62,section:"핵심 기능"},
+  {source:"online",start:20,end:29,audio:.72,section:"핵심 기능"}
+];
+let cursor=0; for(const clip of clips){clip.outStart=cursor;clip.duration=clip.end-clip.start;cursor+=clip.duration;clip.outEnd=cursor}
+const END_DURATION=8,DURATION=cursor+END_DURATION;
+const canvas=document.querySelector("#demo"),ctx=canvas.getContext("2d",{alpha:false});
+const videos=[],voices=[],logo=new Image();
+let logoProcessed;
+let audioCtx,audioOut;
+const waitEvent=(el,name,timeout=120000)=>new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(Error(`${name} timeout: ${el.src}`)),timeout);el.addEventListener(name,()=>{clearTimeout(timer);resolve()},{once:true});el.addEventListener("error",()=>{clearTimeout(timer);reject(Error(`media error: ${el.src}`))},{once:true})});
+function makeVideo(clip){const v=document.createElement("video");v.preload="auto";v.playsInline=true;v.src=SOURCES[clip.source];return v}
+function seek(v,time){return new Promise((resolve,reject)=>{if(Math.abs(v.currentTime-time)<.02&&v.readyState>=2)return resolve();const timer=setTimeout(()=>reject(Error(`seek timeout ${time}: ${v.src}`)),120000);const done=()=>{clearTimeout(timer);resolve()};v.addEventListener("seeked",done,{once:true});v.currentTime=time})}
+function drawContain(video){ctx.fillStyle="#030606";ctx.fillRect(0,0,W,H);const maxH=944,scale=Math.min(W/video.videoWidth,maxH/video.videoHeight),w=video.videoWidth*scale,h=video.videoHeight*scale,x=(W-w)/2,y=(H-h)/2;ctx.imageSmoothingEnabled=true;ctx.drawImage(video,x,y,w,h);const top=ctx.createLinearGradient(0,0,0,105);top.addColorStop(0,"rgba(2,5,5,.94)");top.addColorStop(1,"rgba(2,5,5,0)");ctx.fillStyle=top;ctx.fillRect(0,0,W,105);const bottom=ctx.createLinearGradient(0,H-140,0,H);bottom.addColorStop(0,"rgba(2,5,5,0)");bottom.addColorStop(.42,"rgba(2,5,5,.82)");bottom.addColorStop(1,"rgba(2,5,5,.98)");ctx.fillStyle=bottom;ctx.fillRect(0,H-140,W,140)}
+function captionFor(t){
+  if(t>=3&&t<10)return"직접 땅굴을 파고";
+  if(t>=10&&t<20)return"부대를 보내 적 거점을 파괴";
+  if(t>=20&&t<32)return"30초 준비 · 공격 경로 설계";
+  if(t>=32&&t<50)return"거점 공격 시작 · 부대 자동 진격";
+  if(t>=50&&t<79)return"영웅 · 부대 · 시설의 실시간 전투";
+  if(t>=79&&t<106)return"적 거점 코어를 파괴하면 승리";
+  if(t>=106&&t<118)return"지휘관별 고유 기술";
+  if(t>=118&&t<153)return"스테이지형 캠페인";
+  if(t>=153&&t<168)return"방 코드 온라인 1:1";
+  return"";
+}
+function sectionFor(t){if(t<20)return"게임 소개";if(t<106)return"실제 플레이";if(t<168)return"핵심 기능";return""}
+function drawOverlay(t){const section=sectionFor(t),caption=captionFor(t);if(section){ctx.save();ctx.textBaseline="middle";ctx.font="700 28px 'Malgun Gothic',sans-serif";ctx.fillStyle="#67d9d2";ctx.fillText(section,56,48);ctx.fillStyle="rgba(103,217,210,.9)";ctx.fillRect(56,72,120,3);ctx.restore()}if(caption){ctx.save();ctx.textAlign="center";ctx.textBaseline="middle";ctx.font="700 36px 'Malgun Gothic',sans-serif";ctx.lineWidth=8;ctx.strokeStyle="rgba(0,0,0,.9)";ctx.fillStyle="#f4f1e9";ctx.strokeText(caption,W/2,H-46);ctx.fillText(caption,W/2,H-46);ctx.restore()}let title="",p=0;if(t>=20&&t<22){title="실제 플레이";p=(t-20)/2}else if(t>=106&&t<108){title="핵심 기능";p=(t-106)/2}if(title){const a=Math.min(1,p*5,(1-p)*5);ctx.save();ctx.globalAlpha=a;ctx.fillStyle="rgba(0,8,9,.76)";ctx.fillRect(W/2-390,H/2-88,780,176);ctx.strokeStyle="#67d9d2";ctx.lineWidth=3;ctx.strokeRect(W/2-390,H/2-88,780,176);ctx.textAlign="center";ctx.textBaseline="middle";ctx.font="800 64px 'Malgun Gothic',sans-serif";ctx.fillStyle="#f4f1e9";ctx.fillText(title,W/2,H/2);ctx.restore()}}
+function transparentLogo(image){const c=document.createElement("canvas"),x=c.getContext("2d");c.width=image.width;c.height=image.height;x.drawImage(image,0,0);const pixels=x.getImageData(0,0,c.width,c.height);for(let i=0;i<pixels.data.length;i+=4){const lo=Math.min(pixels.data[i],pixels.data[i+1],pixels.data[i+2]),hi=Math.max(pixels.data[i],pixels.data[i+1],pixels.data[i+2]);if(lo>212&&hi-lo<15){const fade=Math.max(0,Math.min(1,(lo-212)/32));pixels.data[i+3]=Math.round(pixels.data[i+3]*(1-fade))}}x.clearRect(0,0,c.width,c.height);x.putImageData(pixels,0,0);return c}
+function drawStart(t){ctx.fillStyle="#030606";ctx.fillRect(0,0,W,H);const mark=logoProcessed||logo,p=Math.max(0,Math.min(1,t/.35,(2-t)/.45)),maxW=900,maxH=520,scale=Math.min(maxW/mark.width,maxH/mark.height),w=mark.width*scale,h=mark.height*scale;ctx.save();ctx.globalAlpha=p;ctx.shadowColor="rgba(68,205,198,.42)";ctx.shadowBlur=55;ctx.drawImage(mark,(W-w)/2,(H-h)/2-42,w,h);ctx.shadowBlur=0;ctx.textAlign="center";ctx.textBaseline="middle";ctx.fillStyle="#67d9d2";ctx.font="700 38px 'Malgun Gothic',sans-serif";ctx.fillText("팀100",W/2,870);ctx.restore()}
+function drawEnd(t){ctx.fillStyle="#030606";ctx.fillRect(0,0,W,H);const p=Math.max(0,Math.min(1,(t-cursor)/.5)),mark=logoProcessed||logo;const maxW=760,maxH=430,scale=Math.min(maxW/mark.width,maxH/mark.height),w=mark.width*scale,h=mark.height*scale;ctx.save();ctx.globalAlpha=p;ctx.shadowColor="rgba(68,205,198,.35)";ctx.shadowBlur=45;ctx.drawImage(mark,(W-w)/2,180,w,h);ctx.shadowBlur=0;ctx.textAlign="center";ctx.fillStyle="#67d9d2";ctx.font="800 54px 'Malgun Gothic',sans-serif";ctx.fillText("지금 바로 플레이",W/2,750);ctx.fillStyle="#f4f1e9";ctx.font="700 60px 'Segoe UI','Malgun Gothic',sans-serif";ctx.fillText("https://play.udra.co.kr",W/2,850);ctx.restore()}
+function drawVideoFrame(video,t){drawContain(video);drawOverlay(t);if(t>=167&&t<168){ctx.save();ctx.globalAlpha=Math.max(0,Math.min(1,t-167));ctx.fillStyle="#030606";ctx.fillRect(0,0,W,H);ctx.restore()}}
+async function prepare(){logo.src=LOGO;const logoReady=waitEvent(logo,"load",30000);for(const cue of VO_CUES){const audio=new Audio(ROOT+`5. 오픈/영상/audio/v2/${cue.stem}.mp3`);audio.preload="auto";cue.audio=audio;voices.push(audio)}const voiceReady=voices.map(audio=>waitEvent(audio,"canplaythrough",120000));for(const clip of clips){const v=makeVideo(clip);videos.push(v);await waitEvent(v,"loadedmetadata");await seek(v,clip.start);v.pause()}await Promise.all([logoReady,...voiceReady]);for(const cue of VO_CUES)cue.end=cue.start+cue.audio.duration;logoProcessed=transparentLogo(logo);drawStart(0)}
+async function setupAudio(){audioCtx=new AudioContext({sampleRate:48000});await audioCtx.resume();audioOut=audioCtx.createMediaStreamDestination();for(let i=0;i<videos.length;i++){const source=audioCtx.createMediaElementSource(videos[i]),gain=audioCtx.createGain();gain.gain.value=clips[i].audio;clips[i].gainNode=gain;source.connect(gain).connect(audioOut)}for(const cue of VO_CUES){const source=audioCtx.createMediaElementSource(cue.audio),gain=audioCtx.createGain();gain.gain.value=1;source.connect(gain).connect(audioOut)}return audioOut.stream.getAudioTracks()[0]}
+function updateVoice(t,clip){for(const cue of VO_CUES)if(!cue.played&&t>=cue.start){cue.played=true;cue.audio.currentTime=0;cue.audio.play().catch(()=>{})}const speaking=VO_CUES.some(cue=>t>=cue.start&&t<cue.end),tail=t>=167&&t<168?168-t:1;if(clip?.gainNode)clip.gainNode.gain.setTargetAtTime((speaking ? .22 : clip.audio)*tail,audioCtx.currentTime,.06)}
+async function playClip(video,clip,globalStart){video.currentTime=clip.start;await video.play();const started=performance.now();await new Promise(resolve=>{function frame(now){const elapsed=(now-started)/1000,t=globalStart+Math.min(elapsed,clip.duration);updateVoice(t,clip);t<2?drawStart(t):drawVideoFrame(video,t);if(elapsed>=clip.duration)resolve();else requestAnimationFrame(frame)}requestAnimationFrame(frame)});video.pause()}
+window.renderDemo=async()=>{for(const cue of VO_CUES)cue.played=false;const audioTrack=await setupAudio(),stream=new MediaStream([...canvas.captureStream(FPS).getVideoTracks(),audioTrack]),mime=MediaRecorder.isTypeSupported("video/mp4;codecs=avc1.42E01E")?"video/mp4;codecs=avc1.42E01E":"video/mp4",rec=new MediaRecorder(stream,{mimeType:mime,videoBitsPerSecond:5200000,audioBitsPerSecond:192000}),chunks=[];rec.ondataavailable=e=>e.data.size&&chunks.push(e.data);const stopped=new Promise((ok,no)=>{rec.addEventListener("stop",ok,{once:true});rec.addEventListener("error",no,{once:true})});rec.start(1000);for(let i=0;i<clips.length;i++)await playClip(videos[i],clips[i],clips[i].outStart);const endStart=performance.now();await new Promise(resolve=>{function frame(now){const elapsed=(now-endStart)/1000,t=cursor+Math.min(elapsed,END_DURATION);updateVoice(t,null);drawEnd(t);elapsed>=END_DURATION?resolve():requestAnimationFrame(frame)}requestAnimationFrame(frame)});for(const cue of VO_CUES)cue.audio.pause();rec.stop();await stopped;stream.getTracks().forEach(x=>x.stop());await audioCtx.close();const blob=new Blob(chunks,{type:mime}),a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="seoul-999m-hackathon-demo-v5.mp4";a.click();return{size:blob.size,mimeType:mime,duration:DURATION,clips:clips.length,voiceCues:VO_CUES.map(c=>({stem:c.stem,start:c.start,duration:c.audio.duration}))}};
+prepare().then(()=>window.__demoReady=true).catch(e=>{window.__demoError=String(e.stack||e);console.error(e)});
+</script></body></html>

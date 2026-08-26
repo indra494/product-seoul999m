@@ -6,11 +6,13 @@ import { HEROES } from "../game/content";
 import {
   roomCanStart,
   roomCapacity,
+  isValidOnlineDigCommand,
   isOnlineRouteAllocation,
   onlineRoomRuleset,
   type OnlineRoomPlayer,
   type OnlineRoomState,
   type OnlineRoomView,
+  type OnlineBattleCommand,
   type OnlineBattleSnapshot,
   type OnlineRouteAllocation,
   opponentTeam,
@@ -24,6 +26,7 @@ import {
 } from "../game/secretTunnelRules";
 
 const ONLINE_ADJUDICATION_GRACE_MS = 750;
+const ONLINE_SNAPSHOT_BACKPRESSURE_BYTES = 512 * 1024;
 
 interface Env {
   ASSETS: Fetcher;
@@ -49,9 +52,12 @@ type RoomActionBody = {
   token?: string;
   action: string;
   command?: {
-    type: "move" | "attack" | "skill" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
+    type: "move" | "attack" | "skill" | "dig" | "drill" | "survival" | "route" | "allocation" | "build" | "upgrade" | "demolish" | "fill" | "tactical" | "research" | "elite";
+    clientSequence?: number;
     x?: number;
     y?: number;
+    sourceX?: number;
+    sourceY?: number;
     dx?: number;
     dy?: number;
     drillWidthBonus?: number;
@@ -236,17 +242,22 @@ const publicRoom = (room: OnlineRoomState, viewer?: RoomViewer): OnlineRoomView 
 });
 
 export class RoomHub extends DurableObject<Env> {
+  private cachedRoom: OnlineRoomState | null | undefined;
+
   constructor(private roomState: RoomDurableState, env: Env) {
     super(roomState, env);
   }
 
   private async load() {
-    return (await this.roomState.storage.get<OnlineRoomState>("room")) ?? null;
+    if (this.cachedRoom !== undefined) return this.cachedRoom;
+    this.cachedRoom = (await this.roomState.storage.get<OnlineRoomState>("room")) ?? null;
+    return this.cachedRoom;
   }
 
   private async save(room: OnlineRoomState) {
     room.revision++;
     room.updatedAt = Date.now();
+    this.cachedRoom = room;
     await this.roomState.storage.put("room", room);
     this.broadcast(room);
     return room;
@@ -258,6 +269,47 @@ export class RoomHub extends DurableObject<Env> {
         viewer = room.players.find((player) => player.id === attachment?.playerId),
         message = JSON.stringify({ type: "room", room: publicRoom(room, viewer) });
       try { socket.send(message); } catch { /* 닫히는 중인 연결은 close 핸들러가 정리한다. */ }
+    }
+  }
+
+  private broadcastCommand(room: OnlineRoomState, command: OnlineBattleCommand) {
+    const sender = room.players.find((player) => player.id === command.playerId);
+    for (const socket of this.roomState.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as { playerId?: string } | null,
+        viewer = room.players.find((player) => player.id === attachment?.playerId);
+      if (!viewer || viewer.id === command.playerId) continue;
+      if (
+        onlineRoomRuleset(room) !== "open-front" &&
+        viewer.id !== room.hostId &&
+        viewer.team !== sender?.team
+      ) continue;
+      try {
+        socket.send(JSON.stringify({
+          type: "command",
+          command,
+          commandSequence: room.commandSequence,
+        }));
+      } catch { /* 닫히는 중인 연결은 close 핸들러가 정리한다. */ }
+    }
+  }
+
+  private broadcastSnapshot(room: OnlineRoomState) {
+    if (!room.snapshot) return;
+    for (const socket of this.roomState.getWebSockets()) {
+      const attachment = socket.deserializeAttachment() as { playerId?: string } | null,
+        viewer = room.players.find((player) => player.id === attachment?.playerId);
+      // 방장은 자기 스냅샷을 다시 파싱·적용할 필요가 없다.
+      if (!viewer || viewer.id === room.hostId) continue;
+      if (socket.bufferedAmount > ONLINE_SNAPSHOT_BACKPRESSURE_BYTES) continue;
+      const snapshot = snapshotForTeam(room, viewer);
+      if (!snapshot) continue;
+      try {
+        socket.send(JSON.stringify({
+          type: "snapshot",
+          snapshot,
+          commandSequence: room.commandSequence,
+        }));
+      } catch { /* 닫히는 중인 연결은 close 핸들러가 정리한다. */ }
     }
   }
 
@@ -290,7 +342,14 @@ export class RoomHub extends DurableObject<Env> {
     if (deadlines.length) void this.roomState.storage.setAlarm(Math.max(now + 100, Math.min(...deadlines)));
   }
 
-  private async applyAction(room: OnlineRoomState, player: OnlineRoomPlayer, body: RoomActionBody, now: number): Promise<{ error?: string; status?: number }> {
+  private async applyAction(
+    room: OnlineRoomState,
+    player: OnlineRoomPlayer,
+    body: RoomActionBody,
+    now: number,
+    realtime = false,
+  ): Promise<{ error?: string; status?: number }> {
+    let acceptedCommand: OnlineBattleCommand | undefined;
     player.lastSeen = now;
     player.connected = true;
     if (body.action === "ready") player.ready = true;
@@ -325,8 +384,15 @@ export class RoomHub extends DurableObject<Env> {
       if (room.status !== "playing" || !body.command)
         return { error: "진행 중인 전투 명령만 전송할 수 있습니다.", status: 409 };
       const command = body.command;
-      if (!( ["move", "attack", "skill", "drill", "survival", "route", "allocation", "build", "upgrade", "demolish", "fill", "tactical", "research", "elite"] as string[]).includes(command.type))
+      if (!( ["move", "attack", "skill", "dig", "drill", "survival", "route", "allocation", "build", "upgrade", "demolish", "fill", "tactical", "research", "elite"] as string[]).includes(command.type))
         return { error: "잘못된 전투 명령입니다.", status: 400 };
+      if (
+        command.clientSequence !== undefined &&
+        (!Number.isSafeInteger(command.clientSequence) || command.clientSequence <= 0)
+      )
+        return { error: "잘못된 클라이언트 명령 번호입니다.", status: 400 };
+      if (command.type === "dig" && !isValidOnlineDigCommand(command))
+        return { error: "잘못된 일반 굴착 명령입니다.", status: 400 };
       if (
         command.type === "move" &&
         (command.x === undefined || command.y === undefined) &&
@@ -375,12 +441,16 @@ export class RoomHub extends DurableObject<Env> {
         )
       )
         return { error: "잘못된 굴착 명령입니다.", status: 400 };
-      room.commands.push({ ...command, sequence: ++room.commandSequence, playerId: player.id, issuedAt: now });
+      acceptedCommand = { ...command, sequence: ++room.commandSequence, playerId: player.id, issuedAt: now };
+      room.commands.push(acceptedCommand);
       if (room.commands.length > 96) room.commands.splice(0, room.commands.length - 96);
     } else if (body.action === "snapshot") {
       if (room.status !== "playing" || player.id !== room.hostId || !body.snapshot)
         return { error: "방장 전투 상태만 동기화할 수 있습니다.", status: 403 };
       room.snapshot = { ...body.snapshot, sequence: (room.snapshot?.sequence ?? 0) + 1, issuedAt: now };
+      const lastAppliedCommandSequence = body.snapshot.lastAppliedCommandSequence ?? 0;
+      if (Number.isSafeInteger(lastAppliedCommandSequence) && lastAppliedCommandSequence > 0)
+        room.commands = room.commands.filter((command) => command.sequence > lastAppliedCommandSequence);
     } else if (body.action === "finish") {
       if (
         room.status !== "playing" ||
@@ -411,6 +481,20 @@ export class RoomHub extends DurableObject<Env> {
       for (const member of room.players) member.ready = false;
     } else if (body.action !== "heartbeat") return { error: "알 수 없는 방 명령입니다.", status: 400 };
     if (room.status === "countdown" && room.countdownAt && now >= room.countdownAt) room.status = "playing";
+    if (realtime && (body.action === "command" || body.action === "snapshot")) {
+      room.revision++;
+      room.updatedAt = now;
+      this.cachedRoom = room;
+      if (body.action === "command" && acceptedCommand)
+        this.broadcastCommand(room, acceptedCommand);
+      else {
+        // 스냅샷만 복구 상태로 영속화한다. 입력마다 전체 방을 쓰지 않는다.
+        await this.roomState.storage.put("room", room);
+        this.broadcastSnapshot(room);
+      }
+      this.scheduleRoomAlarm(room, now);
+      return {};
+    }
     await this.save(room);
     this.scheduleRoomAlarm(room, now);
     return {};
@@ -424,7 +508,7 @@ export class RoomHub extends DurableObject<Env> {
       room = await this.load(),
       player = room?.players.find((candidate) => candidate.id === attachment?.playerId && candidate.token === attachment?.token);
     if (!room || !player) { this.socketError(socket, "방 참가 인증이 만료되었습니다."); socket.close(4003, "expired"); return; }
-    const result = await this.applyAction(room, player, body, Date.now());
+    const result = await this.applyAction(room, player, body, Date.now(), true);
     if (result.error) this.socketError(socket, result.error);
   }
 

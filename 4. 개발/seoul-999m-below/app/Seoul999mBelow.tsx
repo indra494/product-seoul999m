@@ -80,6 +80,11 @@ import { AUTONOMOUS_FRONTIER_REPLAN_MS, computerWaveFormation, frontLineScreenGo
 import { canReserveElite, createEliteDeploymentState, ELITE_RESERVATION_COST, ELITE_UNLOCK_WAVE, eliteReadyInWaves, REGULAR_MINION_CAP, REINFORCEMENT_MINION_CAP, reinforcementFormation, withReservedElite } from "../game/eliteMinions";
 import { creditedAmount, ELITE_KILL_CREDITS, HERO_KILL_CREDITS, installationKillCredits, MINION_KILL_CREDITS, SKIRMISH_STARTING_CREDITS } from "../game/skirmishEconomy";
 import {
+  SKIRMISH_DIFFICULTIES,
+  skirmishDifficultyBalance,
+  type SkirmishDifficulty,
+} from "../game/skirmishDifficulty";
+import {
   SECRET_TUNNEL_ASSAULT_MS,
   SECRET_TUNNEL_DRILL_COOLDOWN_MULTIPLIER,
   SECRET_TUNNEL_PREPARE_MS,
@@ -101,6 +106,7 @@ import {
   shareSecretTunnelBackbone,
   type BattlePhase,
   type SecretTunnelOverlay,
+  type SecretTunnelTileOverlay,
   type TunnelRouteAllocation,
 } from "../game/secretTunnelRules";
 import {
@@ -151,6 +157,7 @@ import {
   type MatchConfig,
   type TeamSize,
 } from "../game/matchConfig";
+import { minimapDragAnchor, minimapDragTarget, type RatioPoint } from "../game/minimapCamera";
 import {
   ONLINE_REMOTE_INTERPOLATION_MS,
   ONLINE_SNAPSHOT_INTERVAL_MS,
@@ -158,6 +165,7 @@ import {
   onlineRoomRuleset,
   roomCanStart,
   shouldApplyAuthoritativeHeroPosition,
+  shouldPreserveOnlineTerrainPrediction,
   type OnlineRoomView,
   type RoomClientIdentity,
 } from "../game/onlineRoom";
@@ -593,6 +601,7 @@ export default function Seoul999mBelow() {
     [selectedHeroId, setSelectedHeroId] = useState("yoo-seungcheon"),
     [selectedAllyHeroId, setSelectedAllyHeroId] = useState("kimssi"),
     [skirmishTeamSize, setSkirmishTeamSize] = useState<TeamSize>(1),
+    [skirmishDifficulty, setSkirmishDifficulty] = useState<SkirmishDifficulty>("easy"),
     [selectedRuleset, setSelectedRuleset] = useState<BattleRuleset>("secret-tunnel"),
     [selectedMapId, setSelectedMapId] = useState<BattleMapId>("secret-crossroads"),
     [selectedLoadout, setSelectedLoadout] = useState<[ItemId | null, ItemId | null]>([
@@ -694,6 +703,7 @@ export default function Seoul999mBelow() {
     mobileMove = useRef<{ x: number; y: number } | null>(null),
     mobileOnlineMoveTimerRef = useRef<number | null>(null),
     pausedRef = useRef(false),
+    onlineMenuOpenRef = useRef(false),
     minimapCollapsedRef = useRef(false),
     pendingTalentTiersRef = useRef<TalentTier[]>([]),
     talentTierOpenRef = useRef<TalentTier | null>(null),
@@ -704,6 +714,8 @@ export default function Seoul999mBelow() {
     onlineSnapshotRef = useRef<OnlineBattleSnapshot | null>(null),
     onlineSocketRef = useRef<OnlineRoomSocket | null>(null),
     onlineAiPlayersRef = useRef<Set<string>>(new Set()),
+    onlineClientCommandSequenceRef = useRef(0),
+    lastOnlineMoveCommandAtRef = useRef(0),
     fullscreenExitGuardUntilRef = useRef(0),
     isCampaign = gameMode === "campaign1",
     isSecretBattleUi = !isCampaign && activeMatchConfig?.ruleset === "secret-tunnel";
@@ -736,7 +748,7 @@ export default function Seoul999mBelow() {
     setTalentTierOpen(null);
   }, [outcome]);
   const command = (v: string) => {
-      if (!pausedRef.current) {
+      if (!pausedRef.current && !onlineMenuOpenRef.current) {
         commands.current.push(v);
         if (v === "skill1") publishOnlineInput({ type: "skill", slot: 1 });
         else if (v === "release2") publishOnlineInput({ type: "skill", slot: 2 });
@@ -793,21 +805,33 @@ export default function Seoul999mBelow() {
       if (e.currentTarget.hasPointerCapture(e.pointerId))
         e.currentTarget.releasePointerCapture(e.pointerId);
     };
-  const minimapMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
+  const minimapPointer = (
+      e: ReactPointerEvent<HTMLButtonElement>,
+      phase: "start" | "move",
+    ) => {
       e.preventDefault();
       const r = e.currentTarget.getBoundingClientRect(),
         x = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width)),
         y = Math.max(0, Math.min(1, (e.clientY - r.top) / r.height));
-      command(`camera:${x}:${y}`);
+      command(`camera:${phase}:${x}:${y}`);
     },
     minimapDragStart = (e: ReactPointerEvent<HTMLButtonElement>) => {
+      e.preventDefault();
       e.currentTarget.setPointerCapture(e.pointerId);
-      minimapMove(e);
+      minimapPointer(e, "start");
     },
     minimapDragMove = (e: ReactPointerEvent<HTMLButtonElement>) => {
-      if (e.currentTarget.hasPointerCapture(e.pointerId)) minimapMove(e);
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) minimapPointer(e, "move");
     },
     minimapDragEnd = (e: ReactPointerEvent<HTMLButtonElement>) => {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        minimapPointer(e, "move");
+        command("camera:end");
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    },
+    minimapDragCancel = (e: ReactPointerEvent<HTMLButtonElement>) => {
+      command("camera:end");
       if (e.currentTarget.hasPointerCapture(e.pointerId))
         e.currentTarget.releasePointerCapture(e.pointerId);
     },
@@ -817,18 +841,26 @@ export default function Seoul999mBelow() {
     };
   const togglePause = () => {
     if (screen !== "play" || outcome) return;
+    openTalentTier(null);
+    mobileMove.current = null;
+    if (mobileOnlineMoveTimerRef.current !== null) {
+      window.clearInterval(mobileOnlineMoveTimerRef.current);
+      mobileOnlineMoveTimerRef.current = null;
+    }
     if (activeMatchConfig?.kind === "online") {
-      setMessage("온라인 대전은 일시정지할 수 없다");
+      onlineMenuOpenRef.current = !onlineMenuOpenRef.current;
+      setPaused(onlineMenuOpenRef.current);
+      setMessage(onlineMenuOpenRef.current ? "온라인 전투 메뉴 · 경기는 계속 진행 중" : "온라인 전투 복귀");
       return;
     }
-    openTalentTier(null);
+    onlineMenuOpenRef.current = false;
     pausedRef.current = !pausedRef.current;
-    mobileMove.current = null;
     setPaused(pausedRef.current);
   };
   const restartComputerBattle = () => {
     if (activeMatchConfig?.kind !== "computer") return;
     pausedRef.current = false;
+    onlineMenuOpenRef.current = false;
     pendingTalentTiersRef.current = [];
     mobileMove.current = null;
     commands.current = [];
@@ -860,6 +892,7 @@ export default function Seoul999mBelow() {
       setOnlineIdentity(null);
     }
     pausedRef.current = false;
+    onlineMenuOpenRef.current = false;
     pendingTalentTiersRef.current = [];
     mobileMove.current = null;
     commands.current = [];
@@ -994,6 +1027,7 @@ export default function Seoul999mBelow() {
     }
     setActiveMatchConfig(createComputerMatch({
       ruleset: selectedRuleset,
+      difficulty: skirmishDifficulty,
       teamSize: skirmishTeamSize,
       mapId: selectedMapId,
       playerHeroId: heroId,
@@ -1102,33 +1136,74 @@ export default function Seoul999mBelow() {
       setLobbyNotice(error instanceof Error ? error.message : "방 명령 실패");
     } finally { setOnlineBusy(false); }
   };
-  const publishOnlineInput = (input: Omit<OnlineBattleCommand, "sequence" | "playerId" | "issuedAt">) => {
-    if (!onlineRoom || !onlineIdentity || onlineRoom.status !== "playing") return;
-    if (onlineSocketRef.current?.send("command", { command: input })) return;
-    void sendOnlineBattleCommand(onlineRoom.code, onlineIdentity, input).catch((error) =>
+  const publishOnlineInput = (
+    input: Omit<OnlineBattleCommand, "sequence" | "playerId" | "issuedAt" | "clientSequence">,
+  ) => {
+    if (!onlineRoom || !onlineIdentity || onlineRoom.status !== "playing") return null;
+    const clientSequence = ++onlineClientCommandSequenceRef.current,
+      command = { ...input, clientSequence };
+    if (onlineSocketRef.current?.send("command", { command })) return clientSequence;
+    void sendOnlineBattleCommand(onlineRoom.code, onlineIdentity, command).catch((error) =>
       setLobbyNotice(error instanceof Error ? error.message : "전투 명령 전송 실패"),
     );
+    return clientSequence;
   };
   useEffect(() => {
     if (!onlineRoom || !onlineIdentity) return;
+    const receiveOnlineCommand = (command: OnlineBattleCommand, commandSequence: number) => {
+        if (
+          command.sequence > lastOnlineCommandRef.current &&
+          command.playerId !== onlineIdentity.playerId
+        ) onlineCommandInboxRef.current.push(command);
+        lastOnlineCommandRef.current = Math.max(lastOnlineCommandRef.current, commandSequence);
+      },
+      receiveOnlineSnapshot = (snapshot: OnlineBattleSnapshot, commandSequence: number) => {
+        lastOnlineCommandRef.current = Math.max(lastOnlineCommandRef.current, commandSequence);
+        if (snapshot.sequence <= lastOnlineSnapshotRef.current) return;
+        onlineSnapshotRef.current = snapshot;
+        lastOnlineSnapshotRef.current = snapshot.sequence;
+        onlineClientCommandSequenceRef.current = Math.max(
+          onlineClientCommandSequenceRef.current,
+          snapshot.lastAppliedClientSequences?.[onlineIdentity.playerId] ?? 0,
+        );
+      };
     const socket = connectOnlineRoomSocket({
       code: onlineRoom.code,
       identity: onlineIdentity,
       onRoom: (incoming) => {
         const unseen = incoming.commands.filter(
-          (command) => command.sequence > lastOnlineCommandRef.current && command.playerId !== onlineIdentity.playerId,
+          (command) =>
+            command.sequence > lastOnlineCommandRef.current &&
+            command.playerId !== onlineIdentity.playerId,
         );
         if (unseen.length) onlineCommandInboxRef.current.push(...unseen);
-        lastOnlineCommandRef.current = Math.max(lastOnlineCommandRef.current, incoming.commandSequence);
+        lastOnlineCommandRef.current = Math.max(
+          lastOnlineCommandRef.current,
+          incoming.commandSequence,
+        );
         onlineAiPlayersRef.current = new Set(
           incoming.players.filter((player) => player.aiControlled).map((player) => player.id),
         );
-        if (incoming.snapshot && incoming.snapshot.sequence > lastOnlineSnapshotRef.current) {
-          onlineSnapshotRef.current = incoming.snapshot;
-          lastOnlineSnapshotRef.current = incoming.snapshot.sequence;
-        }
-        setOnlineRoom((current) => newestOnlineRoomView(current, incoming));
+        if (incoming.snapshot)
+          receiveOnlineSnapshot(incoming.snapshot, incoming.commandSequence);
+        setOnlineRoom((current) => {
+          const next = newestOnlineRoomView(current, incoming);
+          if (!current || current.status !== "playing" || next.status !== "playing") return next;
+          const playerPresentationChanged = current.players.length !== next.players.length ||
+            current.players.some((player, index) => {
+              const candidate = next.players[index];
+              return !candidate ||
+                player.id !== candidate.id ||
+                player.ready !== candidate.ready ||
+                player.connected !== candidate.connected ||
+                player.aiControlled !== candidate.aiControlled ||
+                player.heroId !== candidate.heroId;
+            });
+          return playerPresentationChanged ? next : current;
+        });
       },
+      onCommand: receiveOnlineCommand,
+      onSnapshot: receiveOnlineSnapshot,
       onStatus: (status) => setLobbyNotice(status === "connected" ? `방 ${onlineRoom.code} 실시간 연결` : "통신 재연결 중…"),
       onError: setLobbyNotice,
     });
@@ -1182,6 +1257,9 @@ export default function Seoul999mBelow() {
       setActiveMatchConfig(config);
       setSelectedHeroId(local.heroId);
       setGameMode("skirmish");
+      pausedRef.current = false;
+      onlineMenuOpenRef.current = false;
+      setPaused(false);
       setOutcome(null);
       setMessage(
         `온라인 방 ${onlineRoom.code} · ${local.nickname} 투입 · 공용 전장 #${onlineRoom.seed
@@ -1218,6 +1296,8 @@ export default function Seoul999mBelow() {
         : local.team === onlineRoom.winner
           ? "win"
           : "lose";
+      onlineMenuOpenRef.current = false;
+      setPaused(false);
       setOutcome(localOutcome);
       if (onlineRoom.finishReason === "player-left")
         setMessage(local.id === onlineRoom.departedPlayerId ? "방 이탈 · 온라인 경기 종료" : "상대 이탈 · 온라인 경기 승리");
@@ -1233,6 +1313,7 @@ export default function Seoul999mBelow() {
   }, [onlineRoom?.status, onlineRoom?.winner, onlineIdentity?.playerId, outcome, screen]);
   const returnToOnlineRoom = () => {
     pausedRef.current = false;
+    onlineMenuOpenRef.current = false;
     onlineStartedRef.current = false;
     setPaused(false);
     setOutcome(null);
@@ -1451,6 +1532,11 @@ export default function Seoul999mBelow() {
         onlineRoom?.hostId === onlineIdentity?.playerId
           ? onlineRoom.snapshot?.lastAppliedCommandSequence ?? 0
           : 0,
+      appliedOnlineClientSequences: Record<string, number> =
+        activeMatchConfig?.kind === "online" &&
+        onlineRoom?.hostId === onlineIdentity?.playerId
+          ? { ...onlineRoom.snapshot?.lastAppliedClientSequences }
+          : {},
       hostRestoreSnapshotSequence =
         activeMatchConfig?.kind === "online" &&
         onlineRoom?.hostId === onlineIdentity?.playerId
@@ -1485,6 +1571,7 @@ export default function Seoul999mBelow() {
       ended = false,
       cam = { x: 0, y: 0 },
       cameraFree = false,
+      minimapGrabAnchor: RatioPoint | null = null,
       cameraDrag: {
         pointerId: number;
         x: number;
@@ -1547,6 +1634,9 @@ export default function Seoul999mBelow() {
         return ((mixed ^ (mixed >>> 14)) >>> 0) / 4294967296;
       },
       selectedBattleMap = battleMap(activeMatchConfig?.mapId ?? selectedMapId),
+      computerBalance = skirmishDifficultyBalance(
+        activeMatchConfig?.kind === "computer" ? activeMatchConfig.difficulty : "hard",
+      ),
       resolvedBattleSpawns = resolveLocalBattleSpawns(
         selectedBattleMap,
         activeMatchConfig?.seed ?? deterministicSeed,
@@ -2101,12 +2191,22 @@ export default function Seoul999mBelow() {
             }
       }
     }
-    const onlineTerrainChanges = new Map<
+    const pendingOnlineDigPredictions = new Map<
+        string,
+        {
+          clientSequence: number;
+          createdAt: number;
+          gridTile: Tile;
+          tunnelTile?: SecretTunnelTileOverlay;
+        }
+      >(),
+      onlineTerrainChanges = new Map<
         string,
         OnlineBattleSnapshot["terrain"][number]
       >(),
       recordTerrainChange = (x: number, y: number) => {
         if (activeMatchConfig?.kind !== "online") return;
+        if (onlineRoom?.hostId !== onlineIdentity?.playerId) return;
         const tile = grid[y]?.[x];
         if (!tile) return;
         onlineTerrainChanges.set(`${x},${y}`, {
@@ -2643,6 +2743,7 @@ export default function Seoul999mBelow() {
         const adjusted = creditedAmount(
           amount,
           team === "red" && activeMatchConfig?.kind === "computer",
+          computerBalance.enemyCreditMultiplier,
         );
         if (team === "blue") money += adjusted;
         else if (!isCampaign) enemyBuildCredits += adjusted;
@@ -2815,6 +2916,9 @@ export default function Seoul999mBelow() {
               ? 0.62
               : 1,
           campaignDamageScale = isCampaign && u.team === "blue" ? campaignBalance.incomingDamage : 1,
+          computerAttackScale = !isCampaign && activeMatchConfig?.kind === "computer" && from === "red"
+            ? computerBalance.enemyDamage
+            : 1,
           sourceTacticalScale = source?.unit?.minionRole === "elite" ? ELITE_TACTICAL_EFFECT_SCALE : 1,
           targetTacticalScale = u.minionRole === "elite" ? ELITE_TACTICAL_EFFECT_SCALE : 1,
           supportAttackScale = source?.unit?.role === "minion" && supportAuraForUnit(source.unit)?.aura.kind === "attack"
@@ -2826,7 +2930,7 @@ export default function Seoul999mBelow() {
           defenseScale = tacticalDefenseActive && u.faction === "human"
             ? 1 - 0.65 * targetTacticalScale
             : 1,
-          result = combatDamage(d * arenaScale * campaignDamageScale * offenseScale * defenseScale * supportAttackScale, activeArmor, from, canCrit, chance, mult);
+          result = combatDamage(d * arenaScale * campaignDamageScale * computerAttackScale * offenseScale * defenseScale * supportAttackScale, activeArmor, from, canCrit, chance, mult);
         if (tacticalDefenseActive && u.faction === "bugborn" && (u.tacticalShield ?? 0) > 0) {
           const absorbed = Math.min(result.amount, u.tacticalShield ?? 0);
           u.tacticalShield = Math.max(0, (u.tacticalShield ?? 0) - absorbed);
@@ -3025,7 +3129,9 @@ export default function Seoul999mBelow() {
         t.demolish = undefined;
         const def = BUILD_BY_ID[t.kind],
           result = combatDamage(
-            d,
+            d * (!isCampaign && activeMatchConfig?.kind === "computer" && from === "red"
+              ? computerBalance.enemyDamage
+              : 1),
             0,
             from ?? (t.team === "blue" ? "red" : "blue"),
             canCrit,
@@ -3250,6 +3356,10 @@ export default function Seoul999mBelow() {
       },
       damageBase = (attacker: Team, d: number, source?: Unit) => {
         if (isSecretTunnel && battlePhase === "prepare") return;
+        const computerAttackScale = !isCampaign && activeMatchConfig?.kind === "computer" && attacker === "red"
+            ? computerBalance.enemyDamage
+            : 1,
+          adjustedDamage = d * computerAttackScale;
         const campaign1BossSiege = Boolean(
           isCampaign &&
             campaignChapter === 1 &&
@@ -3276,8 +3386,8 @@ export default function Seoul999mBelow() {
             return;
           }
           const shieldDamage = campaign1BossSiege
-            ? Math.max(1, d * 0.65)
-            : source?.shieldDamage ?? Math.max(1, d * 0.2);
+            ? Math.max(1, adjustedDamage * 0.65)
+            : (source?.shieldDamage ?? Math.max(1, d * 0.2)) * computerAttackScale;
           const appliedShieldDamage = Math.min(shield, shieldDamage);
           if (attacker === "blue")
             enemyShield = Math.max(0, enemyShield - shieldDamage);
@@ -3296,7 +3406,7 @@ export default function Seoul999mBelow() {
             gainHeroXp(Math.max(1, Math.floor(shieldDamage * 0.2)));
           return;
         }
-        const coreDamage = exposedCoreDamage(d, {
+        const coreDamage = exposedCoreDamage(adjustedDamage, {
             role: source?.role,
             minionRole: source?.minionRole,
           }),
@@ -3323,6 +3433,39 @@ export default function Seoul999mBelow() {
             );
           setOutcome(enemyHp <= 0 ? "win" : "lose");
         }
+      };
+    const cloneSecretTunnelTile = (
+        tile: SecretTunnelTileOverlay,
+      ): SecretTunnelTileOverlay => ({
+        ...tile,
+        durability: { ...tile.durability },
+        maxDurability: { ...tile.maxDurability },
+      }),
+      publishOnlineDigPrediction = (
+        x: number,
+        y: number,
+        sourceX: number,
+        sourceY: number,
+      ) => {
+        if (
+          activeMatchConfig?.kind !== "online" ||
+          !onlineRoom ||
+          !onlineIdentity ||
+          onlineRoom.hostId === onlineIdentity.playerId
+        ) return;
+        const tile = grid[y]?.[x];
+        if (!tile) return;
+        const clientSequence = publishOnlineInput({ type: "dig", x, y, sourceX, sourceY });
+        if (clientSequence === null) return;
+        const tunnelTile = secretTunnelOverlay
+          ? secretTunnelTileAt(secretTunnelOverlay, { x, y })
+          : undefined;
+        pendingOnlineDigPredictions.set(`${x},${y}`, {
+          clientSequence,
+          createdAt: performance.now(),
+          gridTile: { ...tile },
+          ...(tunnelTile ? { tunnelTile: cloneSecretTunnelTile(tunnelTile) } : {}),
+        });
       };
     const breakTile = (u: Unit, x: number, y: number, power = 1) => {
         const t = grid[y]?.[x];
@@ -3639,7 +3782,28 @@ export default function Seoul999mBelow() {
       d: { x: number; y: number },
     ) => {
       hero.dir = d;
+      const beforeTile = grid[blocked.y]?.[blocked.x],
+        beforeType = beforeTile?.type,
+        beforeHp = beforeTile?.hp,
+        beforeTunnel = secretTunnelOverlay
+          ? secretTunnelTileAt(secretTunnelOverlay, blocked)
+          : undefined,
+        beforeTunnelDurability = beforeTunnel?.durability.blue,
+        beforeTunnelAccess = beforeTunnel?.access;
       breakTile(hero, blocked.x, blocked.y, playerDef.stats.digPower);
+      const afterTile = grid[blocked.y]?.[blocked.x],
+        afterTunnel = secretTunnelOverlay
+          ? secretTunnelTileAt(secretTunnelOverlay, blocked)
+          : undefined;
+      if (
+        afterTile &&
+        (
+          afterTile.type !== beforeType ||
+          afterTile.hp !== beforeHp ||
+          afterTunnel?.durability.blue !== beforeTunnelDurability ||
+          afterTunnel?.access !== beforeTunnelAccess
+        )
+      ) publishOnlineDigPrediction(blocked.x, blocked.y, hero.x, hero.y);
       hero.act = isSecretTunnel && battlePhase === "prepare"
         ? secretTunnelPrepareDuration(135)
         : 135;
@@ -8049,6 +8213,11 @@ export default function Seoul999mBelow() {
           const command = onlineCommandInboxRef.current.shift()!,
             unit = battleAiHeroes.find((candidate) => candidate.onlinePlayerId === command.playerId);
           appliedOnlineCommandSequence = Math.max(appliedOnlineCommandSequence, command.sequence);
+          if (command.clientSequence !== undefined)
+            appliedOnlineClientSequences[command.playerId] = Math.max(
+              appliedOnlineClientSequences[command.playerId] ?? 0,
+              command.clientSequence,
+            );
           if (!unit || !unit.alive) continue;
           if (
             isSecretTunnel &&
@@ -8083,6 +8252,38 @@ export default function Seoul999mBelow() {
                 x: unit.x + command.dx * 2,
                 y: unit.y + command.dy * 2,
               };
+          } else if (
+            command.type === "dig" &&
+            command.x !== undefined &&
+            command.y !== undefined &&
+            command.sourceX !== undefined &&
+            command.sourceY !== undefined &&
+            (!isSecretTunnel || battlePhase === "prepare") &&
+            Math.max(
+              Math.abs(command.x - command.sourceX),
+              Math.abs(command.y - command.sourceY),
+            ) === 1 &&
+            openForTeam(command.sourceX, command.sourceY, unit.team) &&
+            !baseAt(command.sourceX, command.sourceY) &&
+            !turretAt(command.sourceX, command.sourceY, unit.team)
+          ) {
+            unit.x = command.sourceX;
+            unit.y = command.sourceY;
+            unit.dir = cardinal(command.x - command.sourceX, command.y - command.sourceY);
+            unit.remoteGoal = { x: command.x, y: command.y };
+            const definition = HEROES.find((candidate) => candidate.id === unit.heroId);
+            breakTile(unit, command.x, command.y, definition?.stats.digPower ?? 1);
+            if (
+              openForTeam(command.x, command.y, unit.team) &&
+              !occupied(command.x, command.y, unit, unit.team) &&
+              !baseAt(command.x, command.y) &&
+              !turretAt(command.x, command.y, unit.team)
+            ) commitGridMove(
+              unit,
+              command.x,
+              command.y,
+              unitMovementDuration(isSecretTunnel ? secretTunnelPrepareDuration(95) : 180),
+            );
           } else if (command.type === "attack" && target) {
             const range = HEROES.find((definition) => definition.id === unit.heroId)?.stats.range ?? 1.2;
             unit.dir = cardinal(target.x - unit.x, target.y - unit.y);
@@ -8306,6 +8507,16 @@ export default function Seoul999mBelow() {
           const mirrored = localRoomPlayer.team === "red";
           const ownCanonical = localRoomPlayer.team,
             enemyCanonical = ownCanonical === "blue" ? "red" : "blue";
+          const lastAppliedClientSequence = snapshot.lastAppliedClientSequences?.[onlineIdentity.playerId] ?? 0,
+            predictionNow = performance.now();
+          for (const [key, prediction] of pendingOnlineDigPredictions)
+            if (
+              !shouldPreserveOnlineTerrainPrediction(
+                prediction.clientSequence,
+                lastAppliedClientSequence,
+              ) ||
+              predictionNow - prediction.createdAt > 3000
+            ) pendingOnlineDigPredictions.delete(key);
           if (isSecretTunnel) {
             const phaseChanged = Boolean(snapshot.phase && snapshot.phase !== battlePhase);
             if (snapshot.phase) battlePhase = snapshot.phase;
@@ -8395,6 +8606,12 @@ export default function Seoul999mBelow() {
                       owner: restoredOwner === "blue" ? "blue" : current.owner,
                       sharedBackbone: Boolean(state.sharedBackbone),
                     };
+              }
+              for (const [key, prediction] of pendingOnlineDigPredictions) {
+                if (!prediction.tunnelTile) continue;
+                const [x, y] = key.split(",").map(Number);
+                if (resetTiles[y]?.[x])
+                  resetTiles[y][x] = cloneSecretTunnelTile(prediction.tunnelTile);
               }
               secretTunnelOverlay = { ...secretTunnelOverlay, tiles: resetTiles };
               for (const state of snapshot.tunnelAccess) {
@@ -8552,6 +8769,7 @@ export default function Seoul999mBelow() {
           }
           for (const state of snapshot.terrain)
             if (grid[state.y]?.[state.x]) {
+              if (pendingOnlineDigPredictions.has(`${state.x},${state.y}`)) continue;
               grid[state.y][state.x] = {
                 type: state.type,
                 hp: state.hp,
@@ -8574,6 +8792,7 @@ export default function Seoul999mBelow() {
         onlineSnapshotClock = ONLINE_SNAPSHOT_INTERVAL_MS;
         const snapshotPayload: Omit<OnlineBattleSnapshot, "sequence" | "issuedAt"> = {
           lastAppliedCommandSequence: appliedOnlineCommandSequence,
+          lastAppliedClientSequences: { ...appliedOnlineClientSequences },
           ...(isSecretTunnel
             ? {
                 phase: battlePhase,
@@ -8690,8 +8909,20 @@ export default function Seoul999mBelow() {
               aiHero.remoteGoal = undefined;
             else {
               const remoteStep = nextPath(aiHero, aiHero.remoteGoal) ?? cardinal(aiHero.remoteGoal.x - aiHero.x, aiHero.remoteGoal.y - aiHero.y);
-              moveOrDig(aiHero, remoteStep.x, remoteStep.y);
-              aiHero.act = unitMovementDuration(260 / terrainMoveFactor(aiHero.x, aiHero.y));
+              const remoteX = aiHero.x + remoteStep.x,
+                remoteY = aiHero.y + remoteStep.y;
+              if (
+                openForTeam(remoteX, remoteY, aiHero.team) &&
+                !occupied(remoteX, remoteY, aiHero, aiHero.team) &&
+                !baseAt(remoteX, remoteY) &&
+                !turretAt(remoteX, remoteY, aiHero.team)
+              ) commitGridMove(
+                aiHero,
+                remoteX,
+                remoteY,
+                unitMovementDuration(260 / terrainMoveFactor(aiHero.x, aiHero.y)),
+              );
+              else aiHero.act = 90;
             }
           } else aiHero.act = 120;
           return;
@@ -10560,10 +10791,27 @@ export default function Seoul999mBelow() {
         } else if (cmd.startsWith("cursor:")) {
           const [, x, y] = cmd.split(":").map(Number);
           updateCursor(x, y);
-        } else if (cmd.startsWith("camera:")) {
-          const [, x, y] = cmd.split(":").map(Number);
-          focusCameraAt(x * W, y * H);
-          setMessage(`미니맵 관측 위치 · Space로 ${playerDef.name} 복귀`);
+        } else if (cmd === "camera:end") {
+          minimapGrabAnchor = null;
+        } else if (cmd.startsWith("camera:start:") || cmd.startsWith("camera:move:")) {
+          const [, phase, rawX, rawY] = cmd.split(":"),
+            pointer = { x: Number(rawX), y: Number(rawY) };
+          if (phase === "start") {
+            minimapGrabAnchor = minimapDragAnchor(
+              pointer,
+              {
+                x: (cam.x + viewWidth / 2) / W,
+                y: (cam.y + viewHeight / 2) / H,
+              },
+              {
+                width: Math.min(1, viewWidth / W),
+                height: Math.min(1, viewHeight / H),
+              },
+            );
+            setMessage(`미니맵 관측 위치 · Space로 ${playerDef.name} 복귀`);
+          }
+          const target = minimapDragTarget(pointer, minimapGrabAnchor ?? { x: 0, y: 0 });
+          focusCameraAt(target.x * W, target.y * H);
         } else if (cmd === "research:minion") {
           const research = nextMinionResearch(minionLevels.blue);
           if (!research) setMessage("진군대 연구 완료 · 최대 LV.5");
@@ -10655,7 +10903,17 @@ export default function Seoul999mBelow() {
             return;
           }
           if (activeMatchConfig?.kind === "online") {
-            setMessage("온라인 대전은 일시정지할 수 없다");
+            onlineMenuOpenRef.current = !onlineMenuOpenRef.current;
+            keys.clear();
+            mobileMove.current = null;
+            if (mobileOnlineMoveTimerRef.current !== null) {
+              window.clearInterval(mobileOnlineMoveTimerRef.current);
+              mobileOnlineMoveTimerRef.current = null;
+            }
+            pointerHeld = false;
+            cameraDrag = null;
+            setPaused(onlineMenuOpenRef.current);
+            setMessage(onlineMenuOpenRef.current ? "온라인 전투 메뉴 · 경기는 계속 진행 중" : "온라인 전투 복귀");
             return;
           }
           pausedRef.current = !pausedRef.current;
@@ -10666,7 +10924,7 @@ export default function Seoul999mBelow() {
           setPaused(pausedRef.current);
           return;
         }
-        if (pausedRef.current) return;
+        if (pausedRef.current || onlineMenuOpenRef.current) return;
         if (e.ctrlKey && (e.code === "ShiftLeft" || e.code === "ShiftRight")) {
           e.preventDefault();
           return;
@@ -10708,8 +10966,13 @@ export default function Seoul999mBelow() {
           e.code === "KeyS" || e.code === "ArrowDown" ? { x: 0, y: 1 } :
           e.code === "KeyA" || e.code === "ArrowLeft" ? { x: -1, y: 0 } :
           e.code === "KeyD" || e.code === "ArrowRight" ? { x: 1, y: 0 } : null;
-        if (moveDirection)
-          publishOnlineInput({ type: "move", x: hero.x + moveDirection.x * 2, y: hero.y + moveDirection.y * 2 });
+        if (moveDirection && activeMatchConfig?.kind === "online") {
+          const now = performance.now();
+          if (!e.repeat || now - lastOnlineMoveCommandAtRef.current >= 100) {
+            lastOnlineMoveCommandAtRef.current = now;
+            publishOnlineInput({ type: "move", x: hero.x + moveDirection.x * 2, y: hero.y + moveDirection.y * 2 });
+          }
+        }
         if (e.code === "KeyB") {
           e.preventDefault();
           processCommand("build");
@@ -10732,7 +10995,7 @@ export default function Seoul999mBelow() {
         }
       },
       pointerdown = (e: PointerEvent) => {
-        if (pausedRef.current) return;
+        if (pausedRef.current || onlineMenuOpenRef.current) return;
         startAmbient();
         const p = pointerPosition(e);
         if (e.button === 2) {
@@ -11024,7 +11287,7 @@ export default function Seoul999mBelow() {
       heroCoreRegenActive = playerCoreRegenThisFrame;
       if (jumpVisual && now >= jumpVisual.start + jumpVisual.duration)
         jumpVisual = null;
-      enemyBuildClock -= dt;
+      enemyBuildClock -= dt * computerBalance.enemyConstructionRate;
       spawnClock -= dt;
       steamDamageClock -= dt;
       while (commands.current.length) processCommand(commands.current.shift()!);
@@ -14491,6 +14754,9 @@ export default function Seoul999mBelow() {
         if (
           !e.ctrlKey ||
           e.repeat ||
+          pausedRef.current ||
+          onlineMenuOpenRef.current ||
+          ended ||
           (e.code !== "Digit1" && e.code !== "Digit2")
         )
           return;
@@ -14510,6 +14776,7 @@ export default function Seoul999mBelow() {
           e.metaKey ||
           e.repeat ||
           pausedRef.current ||
+          onlineMenuOpenRef.current ||
           ended
         ) return;
         const hotkeyIndex = BUILD_HOTKEY_CODES.indexOf(
@@ -14780,6 +15047,12 @@ export default function Seoul999mBelow() {
   if (screen === "intro")
     return (
       <main className={`title-screen ${menuPanel === "roster" ? "roster-open" : menuPanel === "help" ? "help-open" : ""}`}>
+        <aside className="mobile-landscape-notice" aria-label="모바일 PC 플레이 권장 안내">
+          <span>
+            <b>PC 환경 권장</b>
+            <small>원활한 플레이를 위해 PC 브라우저에서 접속해 주세요.</small>
+          </span>
+        </aside>
         <MenuSceneBackdrop />
         <div className="title-noise" />
         <div className="title-depth">
@@ -15007,7 +15280,7 @@ export default function Seoul999mBelow() {
               <section className="mobile-play-settings" aria-label="모바일 플레이 안내">
                 <span>
                   <b>모바일 화면 맞춤</b>
-                  <small>기기를 가로로 돌리면 전투 조작을 압축 배치합니다. 아래 버튼은 지원 기기에서 전체화면과 가로 고정을 요청합니다.</small>
+                  <small>기기를 가로로 돌리면 이동·기술·아이템을 왼쪽 조작 레일에 배치합니다. 아래 버튼은 지원 기기에서 전체화면과 가로 고정을 요청합니다.</small>
                 </span>
                 <button onClick={requestLandscapeFullscreen}>가로 전체화면 시도</button>
               </section>
@@ -15063,7 +15336,7 @@ export default function Seoul999mBelow() {
                   <section className="help-brief-steps" aria-label="첫 경기 네 단계">
                     <header><small>PLAY IN 4 STEPS</small><b>이 네 가지만 따라 하세요</b></header>
                     <ol>
-                      <li><b>1</b><span><strong>경기 선택</strong><small>컴퓨터와 대전에서 비밀 굴착전·1:1을 고르고 시작합니다.</small></span></li>
+                      <li><b>1</b><span><strong>경기 선택</strong><small>컴퓨터와 대전에서 비밀 굴착전·쉬움·1:1을 고르고 시작합니다.</small></span></li>
                       <li><b>2</b><span><strong>30초 동안 길 연결</strong><small>보이는 적 거점 방향을 클릭하거나 WASD로 팝니다. <kbd>4</kbd>는 넓은 범위를 빠르게 뚫습니다.</small></span></li>
                       <li><b>3</b><span><strong>병력과 함께 전진</strong><small>공격이 시작되면 영웅은 기지로 돌아옵니다. 내가 만든 길로 자동 출전하는 아군을 따라갑니다.</small></span></li>
                       <li><b>4</b><span><strong>방어막·코어 파괴</strong><small>적을 클릭해 공격하고, 붉은 방어막 다음 코어 HP를 0으로 만들면 승리합니다.</small></span></li>
@@ -15103,7 +15376,7 @@ export default function Seoul999mBelow() {
               <section className="help-quickstart" aria-label="처음 플레이 60초 순서">
                 <header><small>60-SECOND START</small><b>처음 플레이는 이 순서만 따라 하세요</b></header>
                 <ol>
-                  <li><b>1</b><span><strong>컴퓨터와 대전 선택</strong><small>비밀 굴착전, 영웅과 Q/R 아이템을 고르고 시작합니다.</small></span></li>
+                  <li><b>1</b><span><strong>컴퓨터와 대전 선택</strong><small>처음이면 쉬움을 고른 뒤 비밀 굴착전, 영웅과 Q/R 아이템을 선택합니다. 어려움은 기존 AI 전투력입니다.</small></span></li>
                   <li><b>2</b><span><strong>클릭해서 땅굴 개척</strong><small>30초 안에 적 거점 또는 상대 터널까지 길을 연결합니다.</small></span></li>
                   <li><b>3</b><span><strong>A/B 공격로 설정</strong><small>A 설정·B 설정으로 경로를 만들고 다음 WAVE 배분을 고릅니다.</small></span></li>
                   <li><b>4</b><span><strong>영웅·진군대로 코어 공격</strong><small>적을 제거하고 방어막과 코어를 파괴하면 승리합니다.</small></span></li>
@@ -15241,7 +15514,7 @@ export default function Seoul999mBelow() {
                 </article>
                 <article className="help-card mobile">
                   <header><span>10</span><b>모바일 가로 플레이</b><small>화면 버튼으로 같은 규칙 사용</small></header>
-                  <p>기기를 가로로 돌린 뒤 왼쪽 방향 패드로 이동·굴착하고 오른쪽 기술·아이템 버튼을 사용합니다. 조준 기술은 버튼을 누른 채 방향을 정하고 놓습니다. A/B 전략과 건설은 <b>전술</b> 버튼으로 펼칩니다.</p>
+                  <p>기기를 가로로 돌리면 전장이 세로로 넓어지고, 왼쪽 조작 레일에 방향 패드·기술·생존·아이템이 2열로 표시됩니다. 조준 기술은 버튼을 누른 채 방향을 정하고 놓습니다. A/B 전략과 건설은 <b>전술</b> 버튼으로 펼칩니다.</p>
                   <ul><li><b>전체화면</b> · 설정의 ‘가로 전체화면 시도’ 사용</li><li><b>상세 경로</b> · A/B 설정 후 전장을 탭해 경유점 추가</li><li><b>화면 이동</b> · 상세 편집 중 빈 곳을 드래그해 카메라 이동</li></ul>
                 </article>
               </div>
@@ -15281,6 +15554,24 @@ export default function Seoul999mBelow() {
                       {size}:{size}
                     </button>
                   ))}
+                </div>
+                <div className="skirmish-difficulty-select" role="radiogroup" aria-label="컴퓨터 대전 난이도 선택">
+                  <b>AI 난이도</b>
+                  {(Object.keys(SKIRMISH_DIFFICULTIES) as SkirmishDifficulty[]).map((difficulty) => {
+                    const definition = SKIRMISH_DIFFICULTIES[difficulty];
+                    return (
+                      <button
+                        key={difficulty}
+                        role="radio"
+                        aria-checked={skirmishDifficulty === difficulty}
+                        className={skirmishDifficulty === difficulty ? "active" : ""}
+                        onClick={() => setSkirmishDifficulty(difficulty)}
+                      >
+                        <strong>{definition.label}</strong>
+                        <small>{definition.callout}</small>
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="battle-map-select">
                   <b>전장 선택</b>
@@ -15383,7 +15674,7 @@ export default function Seoul999mBelow() {
                 </div>
               )}
               <button className="skirmish-start" onClick={() => startSkirmish(selectedHeroId)}>
-                {selectedRuleset === "secret-tunnel" ? "비밀 굴착전" : "개방 전선전"} · {skirmishTeamSize}:{skirmishTeamSize} · {battleMap(selectedMapId).name} 시작
+                {selectedRuleset === "secret-tunnel" ? "비밀 굴착전" : "개방 전선전"} · {SKIRMISH_DIFFICULTIES[skirmishDifficulty].label} · {skirmishTeamSize}:{skirmishTeamSize} · {battleMap(selectedMapId).name} 시작
               </button>
             </section>
           )}
@@ -15453,9 +15744,8 @@ export default function Seoul999mBelow() {
           <span>{secretPhaseAnnouncement.subtitle}</span>
         </section>
       )}
-      <aside className="mobile-landscape-notice" aria-label="모바일 화면 방향 안내">
-        <span><b>가로 화면 권장</b><small>전장과 양손 조작 패널이 함께 보입니다.</small></span>
-        <button onClick={requestLandscapeFullscreen}>전체화면</button>
+      <aside className="mobile-landscape-notice" aria-label="모바일 PC 플레이 권장 안내">
+        <span><b>PC 환경 권장</b><small>원활한 플레이를 위해 PC 브라우저에서 접속해 주세요.</small></span>
       </aside>
       <header>
         <div>
@@ -15515,7 +15805,7 @@ export default function Seoul999mBelow() {
       <button
         className="pause-trigger"
         onClick={togglePause}
-        aria-label="일시정지 메뉴"
+        aria-label={activeMatchConfig?.kind === "online" ? "온라인 전투 메뉴" : "일시정지 메뉴"}
       >
         ESC 메뉴
       </button>
@@ -15579,7 +15869,8 @@ export default function Seoul999mBelow() {
             onPointerDown={minimapDragStart}
             onPointerMove={minimapDragMove}
             onPointerUp={minimapDragEnd}
-            onPointerCancel={minimapDragEnd}
+            onPointerCancel={minimapDragCancel}
+            onLostPointerCapture={() => command("camera:end")}
           />
           <button
             className={`minimap-toggle ${minimapCollapsed ? "collapsed" : ""}`}
@@ -16040,22 +16331,22 @@ export default function Seoul999mBelow() {
           <footer>전투는 계속 진행됩니다 · 지금 선택하지 않아도 특성 포인트는 유지됩니다.</footer>
         </aside>
       )}
-      {paused && (
+      {paused && !outcome && (
         <div
           className="pause-menu"
           role="dialog"
           aria-modal="true"
-          aria-label="일시정지"
+          aria-label={activeMatchConfig?.kind === "online" ? "온라인 전투 메뉴" : "일시정지"}
         >
           <article>
-            <span>OPERATION SUSPENDED</span>
-            <h2>작전 일시정지</h2>
-            <p>지하 전선 시간이 정지했습니다.</p>
-            <button onClick={togglePause}>계속하기</button>
+            <span>{activeMatchConfig?.kind === "online" ? "ONLINE MATCH MENU" : "OPERATION SUSPENDED"}</span>
+            <h2>{activeMatchConfig?.kind === "online" ? "온라인 전투 메뉴" : "작전 일시정지"}</h2>
+            <p>{activeMatchConfig?.kind === "online" ? "메뉴가 열려 있어도 상대와 전투 시간은 계속 진행됩니다." : "지하 전선 시간이 정지했습니다."}</p>
+            <button onClick={togglePause}>{activeMatchConfig?.kind === "online" ? "게임으로 돌아가기" : "계속하기"}</button>
             <button className="exit" onClick={exitToMenu}>
               첫 화면으로
             </button>
-            <small>ESC 키로 계속할 수 있습니다.</small>
+            <small>ESC 키로 {activeMatchConfig?.kind === "online" ? "메뉴를 닫을" : "계속할"} 수 있습니다.</small>
           </article>
         </div>
       )}

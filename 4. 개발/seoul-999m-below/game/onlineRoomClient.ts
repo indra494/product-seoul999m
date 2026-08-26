@@ -19,6 +19,8 @@ const jsonRequest = async <T>(url: string, method: string, body?: unknown): Prom
   return payload;
 };
 
+const ONLINE_SNAPSHOT_BACKPRESSURE_BYTES = 256 * 1024;
+
 export const createOnlineRoom = (request: RoomCreateRequest) =>
   jsonRequest<{ room: OnlineRoomView; identity: RoomClientIdentity }>("/api/rooms", "POST", request);
 
@@ -63,12 +65,16 @@ export const connectOnlineRoomSocket = ({
   code,
   identity,
   onRoom,
+  onCommand,
+  onSnapshot,
   onStatus,
   onError,
 }: {
   code: string;
   identity: RoomClientIdentity;
   onRoom: (room: OnlineRoomView) => void;
+  onCommand?: (command: OnlineBattleCommand, commandSequence: number) => void;
+  onSnapshot?: (snapshot: OnlineBattleSnapshot, commandSequence: number) => void;
   onStatus?: (status: "connected" | "reconnecting") => void;
   onError?: (message: string) => void;
 }): OnlineRoomSocket => {
@@ -93,8 +99,25 @@ export const connectOnlineRoomSocket = ({
     });
     socket.addEventListener("message", (event) => {
       try {
-        const message = JSON.parse(String(event.data)) as { type?: string; room?: OnlineRoomView; error?: string };
+        const message = JSON.parse(String(event.data)) as {
+          type?: string;
+          room?: OnlineRoomView;
+          command?: OnlineBattleCommand;
+          snapshot?: OnlineBattleSnapshot;
+          commandSequence?: number;
+          error?: string;
+        };
         if (message.type === "room" && message.room) onRoom(message.room);
+        else if (
+          message.type === "command" &&
+          message.command &&
+          Number.isSafeInteger(message.commandSequence)
+        ) onCommand?.(message.command, message.commandSequence!);
+        else if (
+          message.type === "snapshot" &&
+          message.snapshot &&
+          Number.isSafeInteger(message.commandSequence)
+        ) onSnapshot?.(message.snapshot, message.commandSequence!);
         else if (message.error) onError?.(message.error);
       } catch {
         onError?.("방 동기화 응답을 읽지 못했습니다.");
@@ -113,6 +136,11 @@ export const connectOnlineRoomSocket = ({
   return {
     send(action, data) {
       if (socket?.readyState !== WebSocket.OPEN) return false;
+      // 느린 회선에서는 이미 밀린 과거 스냅샷보다 다음 최신 스냅샷이 유용하다.
+      if (
+        action === "snapshot" &&
+        socket.bufferedAmount > ONLINE_SNAPSHOT_BACKPRESSURE_BYTES
+      ) return true;
       socket.send(JSON.stringify({ action, ...data }));
       return true;
     },

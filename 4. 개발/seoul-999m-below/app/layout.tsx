@@ -30,11 +30,12 @@ export async function generateMetadata():Promise<Metadata>{
     description,
     icons: {
       icon: [
-        { url: "/favicon.svg?v=2", type: "image/svg+xml" },
-        { url: "/favicon-32x32.png?v=2", type: "image/png", sizes: "32x32" },
+        { url: "/favicon.ico?v=3", type: "image/x-icon", sizes: "32x32" },
+        { url: "/favicon.svg?v=3", type: "image/svg+xml" },
+        { url: "/favicon-32x32.png?v=3", type: "image/png", sizes: "32x32" },
       ],
-      shortcut: "/favicon.svg?v=2",
-      apple: { url: "/apple-touch-icon.png?v=2", type: "image/png", sizes: "180x180" },
+      shortcut: "/favicon.ico?v=3",
+      apple: { url: "/apple-touch-icon.png?v=3", type: "image/png", sizes: "180x180" },
     },
     openGraph:{title,description,images:["/assets/branding/seoul-999m-logo-concept-v1.png"]},
     twitter:{card:"summary_large_image",title,description,images:["/assets/branding/seoul-999m-logo-concept-v1.png"]},
@@ -49,6 +50,11 @@ export default function RootLayout({
   return (
     <html lang="ko">
       <head>
+        <link rel="icon" href="/favicon.ico?v=3" type="image/x-icon" sizes="32x32" />
+        <link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml" />
+        <link rel="icon" href="/favicon-32x32.png?v=3" type="image/png" sizes="32x32" />
+        <link rel="shortcut icon" href="/favicon.ico?v=3" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3" sizes="180x180" />
         <script
           dangerouslySetInnerHTML={{
             __html: BROWSER_EXTENSION_ERROR_GUARD_SCRIPT,

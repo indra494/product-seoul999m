@@ -17,9 +17,19 @@ test("main menu exposes campaign, computer battle, online play, and battle scale
     source("public/favicon.svg"),
   ]);
   hasAll(app, ["서울 지하 999M", "캠페인", "컴퓨터와 대전", "같이하기", "방 코드", "설정", "크게 보기", "도움말", "생존본부 현장 교본", "BATTLE_SCALE_STORAGE_KEY"]);
-  hasAll(layout, ["/favicon.svg?v=2", "/favicon-32x32.png?v=2", "/apple-touch-icon.png?v=2"]);
+  hasAll(layout, [
+    "/favicon.ico?v=3",
+    "/favicon.svg?v=3",
+    "/favicon-32x32.png?v=3",
+    "/apple-touch-icon.png?v=3",
+    '<link rel="icon" href="/favicon.ico?v=3" type="image/x-icon" sizes="32x32" />',
+    '<link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml" />',
+    '<link rel="icon" href="/favicon-32x32.png?v=3" type="image/png" sizes="32x32" />',
+    '<link rel="shortcut icon" href="/favicon.ico?v=3" />',
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3" sizes="180x180" />',
+  ]);
   hasAll(favicon, ["서울 지하 999M", "#39d6dc", ">999M</text>"]);
-  await Promise.all([exists("public/favicon-32x32.png"), exists("public/apple-touch-icon.png")]);
+  await Promise.all([exists("public/favicon.ico"), exists("public/favicon-32x32.png"), exists("public/apple-touch-icon.png")]);
   assert.ok(!app.includes("codex-preview"));
 });
 
@@ -155,7 +165,7 @@ test("production worker config keeps the room durable object deployable", async 
   assert.ok(vite.includes('configPath: "./wrangler.jsonc"'));
 });
 
-test("large battle scale enlarges world actors and mobile tactics stay on a secondary layer", async () => {
+test("large battle scale enlarges world actors and mobile landscape uses a left command rail", async () => {
   const [app, css] = await Promise.all([source("app/Seoul999mBelow.tsx"), source("app/globals.css")]);
   hasAll(app, [
     "drawScaledWorldActor",
@@ -163,12 +173,18 @@ test("large battle scale enlarges world actors and mobile tactics stay on a seco
     "mobileTacticsOpen",
     "모바일 전술 메뉴 펼치기",
     "가로 전체화면 시도",
+    "PC 환경 권장",
+    "원활한 플레이를 위해 PC 브라우저에서 접속해 주세요.",
   ]);
   hasAll(css, [
     ".mobile-tactics-toggle { display: none; }",
     ".combat-command-dock:not(.mobile-tactics-open) > .build-toggle",
     ".combat-command-dock:not(.mobile-tactics-open) > .route-hotkeys",
+    "--mobile-command-rail-width: 100px",
+    "grid-template-columns: var(--mobile-command-rail-width) minmax(0, 1fr)",
+    ".combat-command-dock.mobile-tactics-open > .route-command-panel",
   ]);
+  assert.ok(app.includes("왼쪽 조작 레일에 방향 패드·기술·생존·아이템이 2열로 표시됩니다."));
 });
 
 test("all factions, heroes, minions, buildables, and reusable hero actions are registered", async () => {
@@ -264,13 +280,14 @@ test("online room supports shared combat, local prediction, visual preload, and 
   const [room, client, worker, app, match] = await Promise.all([source("game/onlineRoom.ts"), source("game/onlineRoomClient.ts"), source("worker/index.ts"), source("app/Seoul999mBelow.tsx"), source("game/matchConfig.ts")]);
   const actionBody = worker.slice(worker.indexOf("type RoomActionBody"), worker.indexOf("const responseJson")),
     commandValidation = worker.slice(worker.indexOf('body.action === "command"'), worker.indexOf('body.action === "snapshot"'));
-  hasAll(room, ["teamSize", "ready", "countdown", "playing", "token", "commands", "snapshot", "lastAppliedCommandSequence", "preparationEndsAt", "matchEndsAt", "teamMinionLevels", "teamCredits", "minions", "installations", "terrain", '"tactical"', '"research"', '"elite"', '"allocation"', "teamConnections", "teamRouteAllocations", "ONLINE_ROUTE_ALLOCATIONS", "isOnlineRouteAllocation", "opponentTeam", "shouldApplyAuthoritativeHeroPosition", '"player-left"']);
+  hasAll(room, ["teamSize", "ready", "countdown", "playing", "token", "commands", "snapshot", "lastAppliedCommandSequence", "lastAppliedClientSequences", "preparationEndsAt", "matchEndsAt", "teamMinionLevels", "teamCredits", "minions", "installations", "terrain", '"dig"', '"tactical"', '"research"', '"elite"', '"allocation"', "teamConnections", "teamRouteAllocations", "ONLINE_ROUTE_ALLOCATIONS", "isOnlineRouteAllocation", "isValidOnlineDigCommand", "shouldPreserveOnlineTerrainPrediction", "opponentTeam", "shouldApplyAuthoritativeHeroPosition", '"player-left"']);
   hasAll(client, ["createOnlineRoom", "joinOnlineRoom", "connectOnlineRoomSocket", "onlineRoomSocketUrl", "WebSocket.OPEN"]);
   hasAll(worker, ["class RoomHub", "ROOMS", "RoomJoinRequest", "acceptWebSocket", "webSocketMessage", "webSocketClose", "alarm()", "ONLINE_ADJUDICATION_GRACE_MS", "ready", "start", "command", "snapshot", "finish", "rematch", '"tactical"', '"research"', '"elite"', "opponentTeam", 'finishReason = "player-left"', 'finishReason = "connection-failed"', 'finishReason = "timeout"', 'roomMatch[2] ?? ""']);
-  hasAll(actionBody, ['"route" | "allocation"', "allocation?: OnlineRouteAllocation"]);
-  hasAll(commandValidation, ['"route", "allocation"', "isOnlineRouteAllocation(command.allocation)", "잘못된 공격로 배분입니다."]);
+  hasAll(actionBody, ['"dig"', "clientSequence?: number", "sourceX?: number", "sourceY?: number", '"route" | "allocation"', "allocation?: OnlineRouteAllocation"]);
+  hasAll(commandValidation, ['"dig"', "isValidOnlineDigCommand(command)", '"route", "allocation"', "isOnlineRouteAllocation(command.allocation)", "잘못된 공격로 배분입니다."]);
+  hasAll(worker, ["command.sequence > lastAppliedCommandSequence", "room.commands = room.commands.filter"]);
   hasAll(match, ["canonicalLocalTeam: local.team", 'canonicalLocalTeam: "blue"']);
-  hasAll(app, ["onlineRoom", "onlineIdentity", "processOnlineBattleCommands", "publishOnlineInput", "localTeamForCanonical", "onlineTerrainChanges", "snapshot.minions", "snapshot.installations", "snapshot.terrain", "applyTeamRouteTarget", "shouldApplyAuthoritativeHeroPosition", "setUnitMoveVisual(synced, state.x, state.y, ONLINE_REMOTE_INTERPOLATION_MS)", "ONLINE_SNAPSHOT_INTERVAL_MS", "lastAppliedCommandSequence", "mergedCommands", "newestOnlineRoomView", "initialCanvasRect", "preloadRuntimeVisuals().then"]);
+  hasAll(app, ["onlineRoom", "onlineIdentity", "processOnlineBattleCommands", "publishOnlineInput", "localTeamForCanonical", "pendingOnlineDigPredictions", "onlineTerrainChanges", "snapshot.minions", "snapshot.installations", "snapshot.terrain", "applyTeamRouteTarget", "shouldApplyAuthoritativeHeroPosition", "shouldPreserveOnlineTerrainPrediction", 'type: "dig"', "lastAppliedClientSequences", "setUnitMoveVisual(synced, state.x, state.y, ONLINE_REMOTE_INTERPOLATION_MS)", "ONLINE_SNAPSHOT_INTERVAL_MS", "lastAppliedCommandSequence", "mergedCommands", "newestOnlineRoomView", "initialCanvasRect", "preloadRuntimeVisuals().then"]);
   const updateBody = app.slice(app.indexOf("const update = (dt: number, now: number) =>"), app.indexOf("const draw =", app.indexOf("const update = (dt: number, now: number) =>")));
   assert.ok(
     updateBody.indexOf("syncOnlineBattleState(dt)") < updateBody.indexOf("if (isSecretTunnel)"),
@@ -449,6 +466,52 @@ test("secret-tunnel online snapshots are filtered per team without changing open
     commands,
     "open-front keeps the existing shared command stream",
   );
+});
+
+test("online realtime traffic uses compact command and snapshot envelopes while ESC opens a non-pausing menu", async () => {
+  const [client, worker, app] = await Promise.all([
+    source("game/onlineRoomClient.ts"),
+    source("worker/index.ts"),
+    source("app/Seoul999mBelow.tsx"),
+  ]);
+  const realtimeBranch = worker.slice(
+    worker.indexOf('if (realtime && (body.action === "command"'),
+    worker.indexOf("await this.save(room);", worker.indexOf('if (realtime && (body.action === "command"')),
+  );
+
+  hasAll(client, [
+    "onCommand?:",
+    "onSnapshot?:",
+    'message.type === "command"',
+    'message.type === "snapshot"',
+    "socket.bufferedAmount > ONLINE_SNAPSHOT_BACKPRESSURE_BYTES",
+  ]);
+  hasAll(worker, [
+    "private cachedRoom",
+    "private broadcastCommand",
+    "private broadcastSnapshot",
+    'type: "command"',
+    'type: "snapshot"',
+    "viewer.id === room.hostId",
+    "this.cachedRoom = room",
+  ]);
+  hasAll(realtimeBranch, [
+    "this.broadcastCommand(room, acceptedCommand)",
+    'this.roomState.storage.put("room", room)',
+    "this.broadcastSnapshot(room)",
+  ]);
+  assert.ok(
+    !realtimeBranch.includes("this.broadcast(room)"),
+    "realtime battle packets must not rebroadcast the full room envelope",
+  );
+  hasAll(app, [
+    "onCommand: receiveOnlineCommand",
+    "onSnapshot: receiveOnlineSnapshot",
+    "onlineMenuOpenRef.current = !onlineMenuOpenRef.current",
+    "pausedRef.current || onlineMenuOpenRef.current",
+    '"온라인 전투 메뉴 · 경기는 계속 진행 중"',
+    "now - lastOnlineMoveCommandAtRef.current >= 100",
+  ]);
 });
 
 test("campaign replay, briefing cards, and roster kit icons use live game data", async () => {
@@ -913,7 +976,7 @@ test("the first input starts persistent menu audio without a dedicated button", 
 
 test("both route panels remain visible and the minimap stays aligned for collapse and drag", async () => {
   const [app, css] = await Promise.all([source("app/Seoul999mBelow.tsx"), source("app/globals.css")]);
-  hasAll(app, ["minimapCollapsed", "minimapCollapsedRef", "toggleMinimap", "syncMinimapOverlay", 'stage.style.setProperty("--minimap-left"', 'stage.style.setProperty("--minimap-top"', "미니맵 펼치기", "미니맵 접기"]);
+  hasAll(app, ["minimapCollapsed", "minimapCollapsedRef", "toggleMinimap", "syncMinimapOverlay", "minimapGrabAnchor", "minimapDragAnchor", "minimapDragTarget", 'camera:start:', 'camera:move:', "camera:end", 'stage.style.setProperty("--minimap-left"', 'stage.style.setProperty("--minimap-top"', "미니맵 펼치기", "미니맵 접기"]);
   hasAll(css, ["grid-template-columns: repeat(2, minmax(0, 1fr))", ".minimap-toggle.collapsed", ".battle-stage .minimap-hit[hidden]", ".battle-stage.minimap-layout-ready .minimap-hit", "left: var(--minimap-left", "top: var(--minimap-top"]);
 });
 
@@ -1091,7 +1154,27 @@ test("campaign difficulty buffs allies only and computer AI builds tactical inst
   assert.ok(!app.includes("money += 2"), "player credits must not rise from idle time");
   assert.ok(!app.includes("enemyBuildCredits += 3"), "computer credits must follow combat and ore rewards");
   assert.ok(!app.includes('units.push(makeCampaignHero("sanmi", "red", 45, 20, "battle", 1))'), "campaign 1 must not spawn an early Sanmi boss");
+  assert.ok(presentation.includes("r486: [-1, 1, -1, -1, -1, -1]"), "R-486 moving frame source direction must be independent from idle");
   assert.ok(presentation.includes("c999: [-1, 1, -1, -1, 1, -1]"), "C-999 moving frame source direction must be independent from idle");
+});
+
+test("computer battle offers easy and hard while preserving hard AI pressure", async () => {
+  const [app, matchConfig, difficulty] = await Promise.all([
+    source("app/Seoul999mBelow.tsx"),
+    source("game/matchConfig.ts"),
+    source("game/skirmishDifficulty.ts"),
+  ]);
+  hasAll(app, [
+    'useState<SkirmishDifficulty>("easy")',
+    'aria-label="컴퓨터 대전 난이도 선택"',
+    "SKIRMISH_DIFFICULTIES[skirmishDifficulty].label",
+    "computerBalance.enemyDamage",
+    "computerBalance.enemyCreditMultiplier",
+    "computerBalance.enemyConstructionRate",
+    "비밀 굴착전·쉬움·1:1",
+  ]);
+  hasAll(matchConfig, ["difficulty?: SkirmishDifficulty", "difficulty: resolveSkirmishDifficulty(input.difficulty)"]);
+  hasAll(difficulty, ['DEFAULT_SKIRMISH_DIFFICULTY: SkirmishDifficulty = "easy"', "enemyDamage: 0.88", "enemyCreditMultiplier: 0.92", "enemyConstructionRate: 0.82", "enemyCreditMultiplier: 1.08"]);
 });
 
 test("secret tunnel contacts, hidden public rooms, access-safe attacks, and region markings stay wired to runtime", async () => {
